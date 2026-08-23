@@ -1,0 +1,9 @@
+{
+  "name": "reservas-cafeterias",
+  "private": true,
+  "type": "module",
+  "description": "Prototipo de reservas de almuerzo · UIS. Sin dependencias: este archivo NO instala nada. Solo declara que los .js del proyecto son modulos ES, para que Node pueda importarlos al ejecutar pruebas/contrato.mjs. El navegador no lo lee.",
+  "scripts": {
+    "contrato": "node pruebas/contrato.mjs"
+  }
+}

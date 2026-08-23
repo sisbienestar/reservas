@@ -1,0 +1,915 @@
+/**
+ * reservasCafeterias · backend temporal sobre Google Sheets
+ * ============================================================================
+ *
+ * Implementa el mismo contrato que `js/mock/mockApi.js`: un único endpoint que
+ * recibe { accion, params } y responde SIEMPRE con el mismo sobre.
+ *
+ *   éxito → { ok: true,  data: <lo que sea> }
+ *   error → { ok: false, error: { codigo, mensaje } }
+ *
+ * Que el contrato sea idéntico es lo que permite cambiar de mock a backend
+ * tocando tres líneas en el frontend. Si algo aquí devuelve una forma distinta
+ * a la del mock, la pantalla se rompe — y al revés: cualquier regla de negocio
+ * que el mock aplique y este archivo no, deja de aplicarse.
+ *
+ * PUESTA EN MARCHA
+ * ----------------
+ *  1. Crea una hoja de cálculo nueva en Google Sheets.
+ *  2. Extensiones → Apps Script. Pega este archivo entero.
+ *  3. Ejecuta una vez la función `configurarHojas` (menú de funciones, arriba).
+ *     Crea las tres pestañas con sus cabeceras y siembra las cafeterías.
+ *  4. Implementar → Nueva implementación → Aplicación web.
+ *       · Ejecutar como: Yo
+ *       · Quién tiene acceso: CUALQUIER USUARIO      ← imprescindible
+ *  5. Copia la URL /exec a `API_BASE_URL` en js/config.js y pon
+ *     `FUENTE_DATOS = 'api'`.
+ *
+ * TRES COSAS QUE MUERDEN
+ * ----------------------
+ *  · Apps Script NO responde al preflight de CORS. Por eso el frontend manda
+ *    `Content-Type: text/plain`: así la petición es «simple» y no lo dispara.
+ *    El cuerpo llega igual en `e.postData.contents`.
+ *  · Si el despliegue no es «cualquier usuario», el fetch recibe el HTML de la
+ *    pantalla de login de Google en vez de JSON. El cliente lo detecta y
+ *    devuelve RESPUESTA_INVALIDA; el síntoma es ese, la causa es esta.
+ *  · Cada vez que edites este archivo hay que crear una NUEVA VERSIÓN de la
+ *    implementación. Guardar no basta: la URL /exec sigue sirviendo la versión
+ *    anterior y parecerá que tus cambios no hacen nada.
+ */
+
+/* ── Configuración ───────────────────────────────────────────────────── */
+
+const HOJAS = {
+  cafeterias: {
+    nombre: 'Cafeterias',
+    cabeceras: ['id', 'nombre', 'ubicacion', 'imagen', 'activa'],
+  },
+  menu: {
+    nombre: 'MenuSemanal',
+    cabeceras: ['id', 'fecha', 'opciones'],
+  },
+  reservas: {
+    nombre: 'Reservas',
+    cabeceras: [
+      'id', 'nombre', 'telefono', 'cafeteria_id', 'fecha',
+      'menu_id', 'menu_nombre', 'estado', 'timestamp', 'historial',
+    ],
+  },
+};
+
+/** Columnas que guardan JSON serializado: una hoja no tiene arreglos. */
+const COLUMNAS_JSON = ['opciones', 'historial'];
+
+/** Días sin servicio: 0 = lunes … 6 = domingo. Misma regla que el frontend. */
+const DIAS_SIN_SERVICIO = [5, 6];
+
+/* ── INTERRUPTOR TEMPORAL DE PRUEBAS ────────────────────────────────────
+ *
+ * En `true`, se levanta la regla de «sábados y domingos no hay servicio»
+ * para poder probar el sistema en fin de semana.
+ *
+ * DEBE VOLVER A `false` ANTES DE USARLO DE VERDAD, y hay que crear una
+ * VERSIÓN NUEVA de la implementación para que el cambio surta efecto — si
+ * solo se guarda, la URL /exec sigue sirviendo la versión anterior.
+ *
+ * Tiene una constante gemela, `PERMITIR_FIN_DE_SEMANA`, en js/config.js.
+ * Las dos tienen que estar en el mismo estado: el frontend avisa y el
+ * backend decide.
+ */
+const PERMITIR_FIN_DE_SEMANA = true;
+
+/** Tope por defecto del detalle en `reservas.buscar`. */
+const LIMITE_DETALLE = 500;
+
+/** Tope del rango de consulta: un año natural cubre cualquier reporte. */
+const MAX_DIAS_RANGO = 366;
+
+/* ── Punto de entrada ────────────────────────────────────────────────── */
+
+/**
+ * doPost es el único endpoint. Se toma un bloqueo de script para TODA la
+ * petición, no solo para las escrituras: dos reservas simultáneas del mismo
+ * móvil podrían pasar las dos la comprobación de duplicado si cada una lee
+ * antes de que la otra escriba. Con dos cafeterías atendiendo a la vez, eso
+ * no es un caso teórico.
+ */
+function doPost(e) {
+  const bloqueo = LockService.getScriptLock();
+  try {
+    bloqueo.waitLock(20000);
+  } catch (error) {
+    return responder(fallo('SERVIDOR_OCUPADO', 'El servidor está ocupado. Inténtalo otra vez.'));
+  }
+
+  try {
+    const cuerpo = JSON.parse(e.postData.contents);
+    const accion = cuerpo.accion;
+    const params = cuerpo.params || {};
+
+    const manejador = ACCIONES[accion];
+    if (!manejador) {
+      return responder(fallo('ACCION_DESCONOCIDA', 'La API no reconoce la acción «' + accion + '».'));
+    }
+    return responder(manejador(params));
+  } catch (error) {
+    // Un fallo inesperado no puede salir como HTML de error de Apps Script:
+    // el cliente espera el sobre y lo interpretaría como respuesta inválida.
+    return responder(fallo('ERROR_INTERNO', String(error && error.message ? error.message : error)));
+  } finally {
+    bloqueo.releaseLock();
+  }
+}
+
+/** GET solo para comprobar de un vistazo que el despliegue responde. */
+function doGet() {
+  return responder(exito({ servicio: 'reservasCafeterias', estado: 'en marcha' }));
+}
+
+function responder(sobre) {
+  return ContentService
+    .createTextOutput(JSON.stringify(sobre))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+const exito = (data) => ({ ok: true, data: data === undefined ? null : data });
+const fallo = (codigo, mensaje) => ({ ok: false, error: { codigo: codigo, mensaje: mensaje } });
+
+/* ── Acceso a las hojas ──────────────────────────────────────────────── */
+
+function hoja(clave) {
+  const h = SpreadsheetApp.getActive().getSheetByName(HOJAS[clave].nombre);
+  if (!h) {
+    throw new Error('Falta la pestaña «' + HOJAS[clave].nombre + '». Ejecuta configurarHojas().');
+  }
+  return h;
+}
+
+/**
+ * Lee una pestaña entera como objetos.
+ *
+ * Cada objeto lleva `_fila`, el número de fila real en la hoja, que es lo que
+ * permite volver a escribir justo ahí sin buscar otra vez.
+ */
+function leerTabla(clave) {
+  const h = hoja(clave);
+  const valores = h.getDataRange().getValues();
+  if (valores.length < 2) return [];
+
+  const cabeceras = valores[0].map(String);
+  const filas = [];
+
+  for (let i = 1; i < valores.length; i++) {
+    const fila = valores[i];
+    // Una fila sin id es una fila vacía del final de la hoja.
+    if (!fila[0] && fila[0] !== 0) continue;
+
+    const objeto = { _fila: i + 1 };
+    for (let c = 0; c < cabeceras.length; c++) {
+      objeto[cabeceras[c]] = normalizarCelda(cabeceras[c], fila[c]);
+    }
+    filas.push(objeto);
+  }
+  return filas;
+}
+
+/**
+ * Convierte lo que devuelve la hoja a lo que espera el frontend.
+ *
+ * Tres conversiones que hacen falta sí o sí:
+ *  · Las columnas JSON llegan como texto y tienen que salir como estructura.
+ *  · `activa` puede llegar como booleano real o como el texto «TRUE».
+ *  · Una fecha puede llegar como objeto Date si alguien formateó la columna
+ *    como fecha; hay que devolverla a 'YYYY-MM-DD' en la zona de la hoja, no
+ *    con toISOString(), que en Colombia (UTC−5) resta un día toda la tarde.
+ */
+function normalizarCelda(cabecera, valor) {
+  if (COLUMNAS_JSON.indexOf(cabecera) !== -1) {
+    if (!valor) return [];
+    try {
+      return JSON.parse(valor);
+    } catch (error) {
+      return [];
+    }
+  }
+
+  // El móvil siempre como cadena: si la hoja lo guardó como número, comparar
+  // 3001234567 con '3001234567' daría falso y el duplicado se colaría.
+  if (cabecera === 'telefono') {
+    return String(valor === null || valor === undefined ? '' : valor);
+  }
+
+  if (cabecera === 'activa') {
+    return valor === true || String(valor).toUpperCase() === 'TRUE';
+  }
+
+  if (cabecera === 'fecha' && valor instanceof Date) {
+    return Utilities.formatDate(valor, SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+  }
+
+  return valor === null || valor === undefined ? '' : valor;
+}
+
+/** Prepara un objeto para escribirlo: serializa el JSON y ordena por cabecera. */
+function aFila(clave, objeto) {
+  return HOJAS[clave].cabeceras.map(function (cabecera) {
+    const valor = objeto[cabecera];
+    if (COLUMNAS_JSON.indexOf(cabecera) !== -1) return JSON.stringify(valor || []);
+    return valor === undefined || valor === null ? '' : valor;
+  });
+}
+
+function agregar(clave, objeto) {
+  hoja(clave).appendRow(aFila(clave, objeto));
+  return objeto;
+}
+
+function guardar(clave, objeto) {
+  const h = hoja(clave);
+  h.getRange(objeto._fila, 1, 1, HOJAS[clave].cabeceras.length)
+    .setValues([aFila(clave, objeto)]);
+  return objeto;
+}
+
+/** Quita `_fila` antes de devolver al cliente: es un detalle de la hoja. */
+function limpiar(objeto) {
+  const copia = {};
+  for (const k in objeto) {
+    if (k !== '_fila') copia[k] = objeto[k];
+  }
+  return copia;
+}
+
+const limpiarLista = (lista) => lista.map(limpiar);
+
+/* ── Utilidades de dominio ───────────────────────────────────────────── */
+
+/** Los acentos que NFD separa de su letra. Escapado a propósito: el rango
+ *  escrito con los caracteres literales se corrompe al copiar y pegar. */
+const ACENTOS = /[\u0300-\u036f]/g;
+
+/** 'Bandeja Paisa' → 'bandeja-paisa'. Misma regla que utils/texto.js. */
+function aSlug(texto) {
+  return String(texto || '')
+    .normalize('NFD')
+    .replace(ACENTOS, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function normalizarBusqueda(texto) {
+  return String(texto || '')
+    .normalize('NFD')
+    .replace(ACENTOS, '')
+    .toLowerCase()
+    .trim();
+}
+
+/** Índice de día con la semana empezando en lunes: 0 = lunes … 6 = domingo. */
+function indiceDiaSemana(fechaISO) {
+  const partes = String(fechaISO).split('-');
+  const d = new Date(Number(partes[0]), Number(partes[1]) - 1, Number(partes[2]));
+  const dia = d.getDay(); // 0 = domingo
+  return dia === 0 ? 6 : dia - 1;
+}
+
+function esDiaDeServicio(fechaISO) {
+  if (PERMITIR_FIN_DE_SEMANA) return true;
+  return DIAS_SIN_SERVICIO.indexOf(indiceDiaSemana(fechaISO)) === -1;
+}
+
+function sumarDias(fechaISO, n) {
+  const partes = String(fechaISO).split('-');
+  const d = new Date(Number(partes[0]), Number(partes[1]) - 1, Number(partes[2]) + n);
+  const mes = String(d.getMonth() + 1);
+  const dia = String(d.getDate());
+  return d.getFullYear() + '-' + (mes.length < 2 ? '0' + mes : mes) + '-' + (dia.length < 2 ? '0' + dia : dia);
+}
+
+/** Cuántos días cubre un rango, ambos extremos incluidos. */
+function diasEntre(desde, hasta) {
+  const a = String(desde).split('-');
+  const b = String(hasta).split('-');
+  const d1 = new Date(Number(a[0]), Number(a[1]) - 1, Number(a[2]));
+  const d2 = new Date(Number(b[0]), Number(b[1]) - 1, Number(b[2]));
+  return Math.round((d2 - d1) / 86400000) + 1;
+}
+
+function rangoDias(desde, hasta) {
+  const dias = [];
+  let cursor = desde;
+  while (cursor <= hasta && dias.length < 1000) {
+    dias.push(cursor);
+    cursor = sumarDias(cursor, 1);
+  }
+  return dias;
+}
+
+function ahoraISO() {
+  return new Date().toISOString();
+}
+
+function nuevoId(prefijo) {
+  return prefijo + '-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+}
+
+/* ── Consultas auxiliares ────────────────────────────────────────────── */
+
+function cartaDe(fecha) {
+  const filas = leerTabla('menu');
+  for (let i = 0; i < filas.length; i++) {
+    if (String(filas[i].fecha) === String(fecha)) return filas[i];
+  }
+  return null;
+}
+
+function buscarPlato(fecha, menuId) {
+  const carta = cartaDe(fecha);
+  if (!carta) return null;
+  const opciones = carta.opciones || [];
+  for (let i = 0; i < opciones.length; i++) {
+    if (opciones[i].id === menuId) return opciones[i];
+  }
+  return null;
+}
+
+/** ¿Hay otra reserva ACTIVA de ese móvil, ese día y esa cafetería? */
+function telefonoYaReservo(reservas, cafeteriaId, fecha, telefono, idExcluido) {
+  for (let i = 0; i < reservas.length; i++) {
+    const r = reservas[i];
+    if (r.cafeteria_id === cafeteriaId &&
+        String(r.fecha) === String(fecha) &&
+        String(r.telefono) === String(telefono) &&
+        r.estado === 'activa' &&
+        r.id !== idExcluido) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/* ── Consolidados ────────────────────────────────────────────────────── */
+
+/**
+ * Se calculan aquí, en el servidor, y no en el navegador: el administrador
+ * puede pedir un trimestre entero, y mandar miles de filas al cliente para
+ * que cuente sumas es justo lo que no hay que hacer.
+ */
+function resumir(reservas, desde, hasta, cafeterias) {
+  const conteoDia = {};
+  const dias = rangoDias(desde, hasta);
+  for (let i = 0; i < dias.length; i++) {
+    conteoDia[dias[i]] = { activas: 0, canceladas: 0 };
+  }
+
+  const conteoCafeteria = {};
+  const conteoPlato = {};
+  let activas = 0;
+
+  for (let i = 0; i < reservas.length; i++) {
+    const r = reservas[i];
+    const esActiva = r.estado === 'activa';
+    if (esActiva) activas++;
+
+    const dia = conteoDia[r.fecha];
+    if (dia) dia[esActiva ? 'activas' : 'canceladas']++;
+
+    if (!conteoCafeteria[r.cafeteria_id]) {
+      conteoCafeteria[r.cafeteria_id] = { activas: 0, canceladas: 0 };
+    }
+    conteoCafeteria[r.cafeteria_id][esActiva ? 'activas' : 'canceladas']++;
+
+    // Solo las activas: un consolidado de consumo que sume las canceladas
+    // manda a cocinar comida de más.
+    if (esActiva) {
+      conteoPlato[r.menu_nombre] = (conteoPlato[r.menu_nombre] || 0) + 1;
+    }
+  }
+
+  const porDia = dias.map(function (f) {
+    return { fecha: f, activas: conteoDia[f].activas, canceladas: conteoDia[f].canceladas };
+  });
+
+  let diasConServicio = 0;
+  for (let i = 0; i < porDia.length; i++) {
+    if (porDia[i].activas + porDia[i].canceladas > 0) diasConServicio++;
+  }
+
+  const nombrePorId = {};
+  for (let i = 0; i < cafeterias.length; i++) nombrePorId[cafeterias[i].id] = cafeterias[i].nombre;
+
+  const porCafeteria = Object.keys(conteoCafeteria).map(function (id) {
+    return {
+      cafeteria_id: id,
+      nombre: nombrePorId[id] || id,
+      activas: conteoCafeteria[id].activas,
+      canceladas: conteoCafeteria[id].canceladas,
+    };
+  }).sort(function (a, b) { return b.activas - a.activas; });
+
+  const porPlato = Object.keys(conteoPlato).map(function (nombre) {
+    return { nombre: nombre, total: conteoPlato[nombre] };
+  }).sort(function (a, b) {
+    return b.total - a.total || String(a.nombre).localeCompare(String(b.nombre));
+  });
+
+  return {
+    totales: {
+      total: reservas.length,
+      activas: activas,
+      canceladas: reservas.length - activas,
+      dias_con_servicio: diasConServicio,
+      promedio_diario: diasConServicio > 0 ? Math.round((activas / diasConServicio) * 10) / 10 : 0,
+    },
+    por_dia: porDia,
+    por_cafeteria: porCafeteria,
+    por_plato: porPlato,
+  };
+}
+
+/* ── Acciones ────────────────────────────────────────────────────────── */
+
+const ACCIONES = {
+
+  /* ── Cafeterías ────────────────────────────────────────────────────── */
+
+  'cafeterias.listar': function (params) {
+    const filas = leerTabla('cafeterias');
+    const visibles = params.incluir_inactivas
+      ? filas
+      : filas.filter(function (c) { return c.activa !== false; });
+    return exito(limpiarLista(visibles));
+  },
+
+  'cafeterias.obtener': function (params) {
+    const filas = leerTabla('cafeterias');
+    for (let i = 0; i < filas.length; i++) {
+      if (filas[i].id === params.id) return exito(limpiar(filas[i]));
+    }
+    return fallo('CAFETERIA_NO_ENCONTRADA', 'No existe la cafetería «' + params.id + '».');
+  },
+
+  'cafeterias.crear': function (params) {
+    const nombre = String(params.nombre || '').trim();
+    if (!nombre) return fallo('DATOS_INCOMPLETOS', 'La cafetería necesita al menos un nombre.');
+
+    const id = aSlug(nombre);
+    if (!id) return fallo('DATOS_INCOMPLETOS', 'Ese nombre no produce un identificador válido.');
+
+    const filas = leerTabla('cafeterias');
+    for (let i = 0; i < filas.length; i++) {
+      if (filas[i].id === id) {
+        return fallo('CAFETERIA_DUPLICADA', 'Ya existe una cafetería con el id «' + id + '».');
+      }
+    }
+
+    const cafeteria = {
+      id: id,
+      nombre: nombre,
+      ubicacion: String(params.ubicacion || '').trim(),
+      imagen: '',
+      activa: true,
+    };
+    agregar('cafeterias', cafeteria);
+    return exito(cafeteria);
+  },
+
+  /**
+   * El `id` no se toca: es la clave con la que las reservas históricas
+   * apuntan a esta cafetería, y renombrarlo las dejaría huérfanas.
+   */
+  'cafeterias.actualizar': function (params) {
+    const nombre = String(params.nombre || '').trim();
+    if (!nombre) return fallo('DATOS_INCOMPLETOS', 'La cafetería necesita al menos un nombre.');
+
+    const filas = leerTabla('cafeterias');
+    for (let i = 0; i < filas.length; i++) {
+      if (filas[i].id === params.id) {
+        filas[i].nombre = nombre;
+        filas[i].ubicacion = String(params.ubicacion || '').trim();
+        guardar('cafeterias', filas[i]);
+        return exito(limpiar(filas[i]));
+      }
+    }
+    return fallo('CAFETERIA_NO_ENCONTRADA', 'No existe la cafetería «' + params.id + '».');
+  },
+
+  'cafeterias.archivar': function (params) {
+    return cambiarActiva(params.id, false);
+  },
+
+  'cafeterias.reactivar': function (params) {
+    return cambiarActiva(params.id, true);
+  },
+
+  /* ── Menú ──────────────────────────────────────────────────────────── */
+
+  'menu.delDia': function (params) {
+    const carta = cartaDe(params.fecha);
+    // Sin carta publicada no es un error: es un día sin menú.
+    return exito(carta
+      ? { fecha: carta.fecha, opciones: carta.opciones }
+      : { fecha: params.fecha, opciones: [] });
+  },
+
+  'menu.semana': function (params) {
+    if (!params.lunes) return fallo('DATOS_INCOMPLETOS', 'Hay que indicar el lunes de la semana.');
+
+    const filas = leerTabla('menu');
+    const porFecha = {};
+    for (let i = 0; i < filas.length; i++) porFecha[filas[i].fecha] = filas[i].opciones;
+
+    const dias = rangoDias(params.lunes, sumarDias(params.lunes, 6)).map(function (f) {
+      return { fecha: f, opciones: porFecha[f] || [] };
+    });
+    return exito({ lunes: params.lunes, dias: dias });
+  },
+
+  /**
+   * Guarda la carta de una semana entera. La escritura es atómica: se valida
+   * TODO antes de tocar la hoja, para que un plato repetido el jueves no deje
+   * ya escritos lunes a miércoles.
+   */
+  'menu.guardarSemana': function (params) {
+    if (!params.lunes || !Array.isArray(params.dias)) {
+      return fallo('DATOS_INCOMPLETOS', 'Falta la semana o los días de la carta.');
+    }
+
+    const validas = {};
+    const semana = rangoDias(params.lunes, sumarDias(params.lunes, 6));
+    for (let i = 0; i < semana.length; i++) validas[semana[i]] = true;
+
+    const preparados = [];
+    for (let i = 0; i < params.dias.length; i++) {
+      const dia = params.dias[i];
+      if (!validas[dia.fecha]) {
+        return fallo('RANGO_INVALIDO', 'El día ' + dia.fecha + ' no pertenece a esa semana.');
+      }
+
+      const brutos = dia.platos || [];
+      const conTexto = brutos.filter(function (p) { return String(p).trim(); });
+      if (!esDiaDeServicio(dia.fecha) && conTexto.length > 0) {
+        return fallo('SIN_SERVICIO', 'Los sábados y domingos no hay servicio: no llevan carta.');
+      }
+
+      const opciones = [];
+      for (let j = 0; j < conTexto.length; j++) {
+        const nombre = String(conTexto[j]).trim();
+        const id = aSlug(nombre);
+        if (!id) continue;
+        let repetido = false;
+        for (let k = 0; k < opciones.length; k++) {
+          if (opciones[k].id === id) repetido = true;
+        }
+        if (repetido) {
+          return fallo('MENU_DUPLICADO', '«' + nombre + '» está repetido en la carta de ese día.');
+        }
+        opciones.push({ id: id, nombre: nombre });
+      }
+      preparados.push({ fecha: dia.fecha, opciones: opciones });
+    }
+
+    const filas = leerTabla('menu');
+    const porFecha = {};
+    for (let i = 0; i < filas.length; i++) porFecha[filas[i].fecha] = filas[i];
+
+    for (let i = 0; i < preparados.length; i++) {
+      const p = preparados[i];
+      const existente = porFecha[p.fecha];
+
+      if (p.opciones.length === 0) {
+        // Sin platos, el día se queda sin carta: se vacía la fila en vez de
+        // borrarla, porque borrar filas desplaza los índices de las demás.
+        if (existente) {
+          existente.opciones = [];
+          guardar('menu', existente);
+        }
+      } else if (existente) {
+        existente.opciones = p.opciones;
+        guardar('menu', existente);
+      } else {
+        agregar('menu', { id: p.fecha, fecha: p.fecha, opciones: p.opciones });
+      }
+    }
+
+    return exito({ lunes: params.lunes, dias: preparados });
+  },
+
+  /* ── Reservas ──────────────────────────────────────────────────────── */
+
+  'reservas.delDia': function (params) {
+    const filas = leerTabla('reservas');
+    const delDia = filas.filter(function (r) {
+      return r.cafeteria_id === params.cafeteria_id &&
+             String(r.fecha) === String(params.fecha) &&
+             r.estado === 'activa';
+    }).sort(function (a, b) {
+      return String(a.timestamp).localeCompare(String(b.timestamp));
+    });
+    return exito(limpiarLista(delDia));
+  },
+
+  'reservas.crear': function (params) {
+    const cafeterias = leerTabla('cafeterias');
+    let existe = false;
+    for (let i = 0; i < cafeterias.length; i++) {
+      if (cafeterias[i].id === params.cafeteria_id) existe = true;
+    }
+    if (!existe) {
+      return fallo('CAFETERIA_NO_ENCONTRADA', 'No existe la cafetería «' + params.cafeteria_id + '».');
+    }
+
+    if (!params.nombre || !params.telefono || !params.menu_id) {
+      return fallo('DATOS_INCOMPLETOS', 'Faltan datos obligatorios en la reserva.');
+    }
+    if (!esDiaDeServicio(params.fecha)) {
+      return fallo('SIN_SERVICIO', 'Los sábados y domingos no hay servicio de almuerzo.');
+    }
+
+    const plato = buscarPlato(params.fecha, params.menu_id);
+    if (!plato) return fallo('MENU_INVALIDO', 'Ese plato no está en el menú de hoy.');
+
+    const reservas = leerTabla('reservas');
+    if (telefonoYaReservo(reservas, params.cafeteria_id, params.fecha, params.telefono, null)) {
+      return fallo('RESERVA_DUPLICADA', 'Ese móvil ya tiene una reserva para hoy en esta cafetería.');
+    }
+
+    const ahora = ahoraISO();
+    const reserva = {
+      id: nuevoId('r'),
+      nombre: String(params.nombre).trim(),
+      telefono: String(params.telefono),
+      cafeteria_id: params.cafeteria_id,
+      fecha: params.fecha,
+      menu_id: plato.id,
+      menu_nombre: plato.nombre,
+      estado: 'activa',
+      timestamp: ahora,
+      historial: [{ tipo: 'creacion', timestamp: ahora, cambios: [] }],
+    };
+    agregar('reservas', reserva);
+    return exito(reserva);
+  },
+
+  'reservas.actualizar': function (params) {
+    const reservas = leerTabla('reservas');
+    let reserva = null;
+    for (let i = 0; i < reservas.length; i++) {
+      if (reservas[i].id === params.id) reserva = reservas[i];
+    }
+    if (!reserva) return fallo('RESERVA_NO_ENCONTRADA', 'Esa reserva ya no existe.');
+    if (reserva.estado === 'cancelada') {
+      return fallo('RESERVA_CANCELADA', 'Esa reserva está cancelada y ya no se puede editar.');
+    }
+    if (!params.nombre || !params.telefono || !params.menu_id) {
+      return fallo('DATOS_INCOMPLETOS', 'Faltan datos obligatorios en la reserva.');
+    }
+
+    const plato = buscarPlato(reserva.fecha, params.menu_id);
+    if (!plato) return fallo('MENU_INVALIDO', 'Ese plato no está en la carta de ese día.');
+
+    if (telefonoYaReservo(reservas, reserva.cafeteria_id, reserva.fecha, params.telefono, reserva.id)) {
+      return fallo('RESERVA_DUPLICADA', 'Ese móvil ya tiene otra reserva para hoy en esta cafetería.');
+    }
+
+    // El historial guarda el valor visible, no el id: 'Bandeja paisa' se
+    // entiende dentro de un año; 'bandeja-paisa' obliga a cruzar tablas.
+    const cambios = [];
+    const nombreLimpio = String(params.nombre).trim();
+    const telefonoActual = String(reserva.telefono);
+
+    if (nombreLimpio !== reserva.nombre) {
+      cambios.push({ campo: 'nombre', antes: reserva.nombre, despues: nombreLimpio });
+    }
+    if (String(params.telefono) !== telefonoActual) {
+      cambios.push({ campo: 'telefono', antes: telefonoActual, despues: String(params.telefono) });
+    }
+    if (plato.id !== reserva.menu_id) {
+      cambios.push({ campo: 'menu', antes: reserva.menu_nombre, despues: plato.nombre });
+    }
+
+    // Guardar sin tocar nada dejaría un asiento vacío en el historial, que es
+    // justo lo que un registro de cambios no debe tener.
+    if (cambios.length === 0) {
+      return fallo('SIN_CAMBIOS', 'No se modificó ningún dato de la reserva.');
+    }
+
+    reserva.nombre = nombreLimpio;
+    reserva.telefono = String(params.telefono);
+    reserva.menu_id = plato.id;
+    reserva.menu_nombre = plato.nombre;
+    reserva.historial = (reserva.historial || []).concat([{
+      tipo: 'modificacion',
+      timestamp: ahoraISO(),
+      cambios: cambios,
+    }]);
+    guardar('reservas', reserva);
+    return exito(limpiar(reserva));
+  },
+
+  /**
+   * Cancelación: borrado LÓGICO. La fila no se quita, se marca. Borrarla
+   * tiraría el historial justo del caso que más interesa auditar —«esta
+   * persona reservó y luego se canceló»— y en una hoja compartida no habría
+   * forma de recuperarlo.
+   */
+  'reservas.cancelar': function (params) {
+    const reservas = leerTabla('reservas');
+    for (let i = 0; i < reservas.length; i++) {
+      const reserva = reservas[i];
+      if (reserva.id !== params.id) continue;
+
+      if (reserva.estado === 'cancelada') {
+        return fallo('RESERVA_CANCELADA', 'Esa reserva ya estaba cancelada.');
+      }
+      reserva.estado = 'cancelada';
+      reserva.historial = (reserva.historial || []).concat([{
+        tipo: 'cancelacion',
+        timestamp: ahoraISO(),
+        cambios: [],
+      }]);
+      guardar('reservas', reserva);
+      return exito(limpiar(reserva));
+    }
+    return fallo('RESERVA_NO_ENCONTRADA', 'Esa reserva ya no existe.');
+  },
+
+  /**
+   * Búsqueda con filtros + consolidados, en una sola llamada.
+   *
+   * `limite` recorta el detalle pero NUNCA el resumen: los totales se calculan
+   * sobre todo lo que casa con el filtro, o un rango largo mostraría «1.240
+   * reservas» y una tabla de 500 que no suma eso.
+   */
+  'reservas.buscar': function (params) {
+    if (!params.desde || !params.hasta) {
+      return fallo('RANGO_INVALIDO', 'Hay que indicar la fecha de inicio y la de fin.');
+    }
+    if (params.desde > params.hasta) {
+      return fallo('RANGO_INVALIDO', 'La fecha de inicio es posterior a la de fin.');
+    }
+    // Un rango sin tope se rompe en silencio: la serie diaria se corta y
+    // `por_dia` deja de cuadrar con los totales, sin ninguna pista de por qué.
+    if (diasEntre(params.desde, params.hasta) > MAX_DIAS_RANGO) {
+      return fallo('RANGO_INVALIDO',
+        'El rango no puede superar ' + MAX_DIAS_RANGO + ' días. Consulta por periodos más cortos.');
+    }
+
+    const buscado = params.texto ? normalizarBusqueda(params.texto) : '';
+    const digitos = buscado.replace(/\D/g, '');
+
+    const encontradas = leerTabla('reservas').filter(function (r) {
+      const fecha = String(r.fecha);
+      if (fecha < params.desde || fecha > params.hasta) return false;
+      if (params.cafeteria_id && r.cafeteria_id !== params.cafeteria_id) return false;
+      if (params.estado && r.estado !== params.estado) return false;
+      if (buscado) {
+        const enNombre = normalizarBusqueda(r.nombre).indexOf(buscado) !== -1;
+        const enMovil = digitos && String(r.telefono).indexOf(digitos) !== -1;
+        if (!enNombre && !enMovil) return false;
+      }
+      return true;
+    }).sort(function (a, b) {
+      return String(b.fecha).localeCompare(String(a.fecha)) ||
+             String(b.timestamp).localeCompare(String(a.timestamp));
+    });
+
+    const limite = params.limite === undefined ? LIMITE_DETALLE : params.limite;
+    const detalle = limite > 0 ? encontradas.slice(0, limite) : encontradas;
+
+    return exito({
+      total: encontradas.length,
+      reservas: limpiarLista(detalle),
+      resumen: resumir(encontradas, params.desde, params.hasta, leerTabla('cafeterias')),
+    });
+  },
+};
+
+function cambiarActiva(id, activa) {
+  const filas = leerTabla('cafeterias');
+  for (let i = 0; i < filas.length; i++) {
+    if (filas[i].id === id) {
+      filas[i].activa = activa;
+      guardar('cafeterias', filas[i]);
+      return exito(limpiar(filas[i]));
+    }
+  }
+  return fallo('CAFETERIA_NO_ENCONTRADA', 'No existe la cafetería «' + id + '».');
+}
+
+/* ── Puesta en marcha ────────────────────────────────────────────────── */
+
+/**
+ * Crea las tres pestañas con sus cabeceras y siembra las cuatro cafeterías.
+ * Ejecutar UNA VEZ desde el editor. Es idempotente: si una pestaña ya existe,
+ * la respeta y no la pisa.
+ */
+function configurarHojas() {
+  const libro = SpreadsheetApp.getActive();
+
+  Object.keys(HOJAS).forEach(function (clave) {
+    const definicion = HOJAS[clave];
+    let h = libro.getSheetByName(definicion.nombre);
+    if (!h) h = libro.insertSheet(definicion.nombre);
+
+    if (h.getLastRow() === 0) {
+      h.appendRow(definicion.cabeceras);
+      h.setFrozenRows(1);
+      h.getRange(1, 1, 1, definicion.cabeceras.length).setFontWeight('bold');
+    }
+
+    // Fechas y móviles como TEXTO, no como fecha ni número. Si la hoja los
+    // interpreta, '2026-08-24' vuelve como objeto Date y el móvil pierde
+    // cualquier cero inicial: dos clases enteras de error que así no existen.
+    const columnasTexto = ['fecha', 'telefono', 'timestamp', 'id'];
+    definicion.cabeceras.forEach(function (cabecera, i) {
+      if (columnasTexto.indexOf(cabecera) !== -1) {
+        h.getRange(2, i + 1, h.getMaxRows() - 1, 1).setNumberFormat('@');
+      }
+    });
+  });
+
+  sembrarCafeterias();
+  SpreadsheetApp.getActive().toast('Hojas listas. Ya puedes desplegar la aplicación web.');
+}
+
+function sembrarCafeterias() {
+  const existentes = leerTabla('cafeterias');
+  if (existentes.length > 0) return;
+
+  const semillas = [
+    ['bienestar-pro', 'Bienestar Pro', 'Campus central', 'assets/img/bienestar-pro.jpg'],
+    ['camilo-torres', 'Camilo Torres', 'Auditorio Camilo Torres', 'assets/img/camilo-torres.jpg'],
+    ['bienestar-universitario', 'Bienestar Universitario', 'Edificio de Bienestar Universitario', 'assets/img/bienestar-universitario.jpeg'],
+    ['administracion-3', 'Administración 3', 'Edificio de Administración 3', 'assets/img/administracion3.jpg'],
+  ];
+
+  semillas.forEach(function (s) {
+    agregar('cafeterias', {
+      id: s[0], nombre: s[1], ubicacion: s[2], imagen: s[3], activa: true,
+    });
+  });
+}
+
+/**
+ * Comprobación rápida desde el editor, sin navegador de por medio.
+ * Ejecutar y mirar el registro: si algo está mal montado, sale aquí.
+ */
+function probarDesdeElEditor() {
+  const casos = [
+    ['cafeterias.listar', {}],
+    ['menu.delDia', { fecha: hoyDelServidor() }],
+    ['reservas.delDia', { cafeteria_id: 'bienestar-pro', fecha: hoyDelServidor() }],
+    ['reservas.buscar', { desde: sumarDias(hoyDelServidor(), -30), hasta: hoyDelServidor(), limite: 3 }],
+  ];
+
+  casos.forEach(function (caso) {
+    const respuesta = ACCIONES[caso[0]](caso[1]);
+    const resumen = respuesta.ok
+      ? 'ok · ' + JSON.stringify(respuesta.data).slice(0, 120)
+      : 'ERROR · ' + respuesta.error.codigo + ': ' + respuesta.error.mensaje;
+    Logger.log(caso[0] + ' → ' + resumen);
+  });
+}
+
+/**
+ * Vuelca las tres pestañas a JSON, listas para cargar en otra base de datos.
+ *
+ * Ejecutar desde el editor y copiar el resultado del registro. Es la salida
+ * de emergencia y también la puerta de la migración: el día que esto pase a
+ * una base de datos de verdad, lo primero es sacar los datos de aquí sin
+ * depender de exportar CSV a mano pestaña por pestaña —que además rompe las
+ * columnas JSON, porque el historial lleva comas dentro.
+ *
+ * Las fechas y los móviles salen como cadenas, y `opciones` e `historial`
+ * como estructuras ya deserializadas.
+ */
+function exportarTodo() {
+  const volcado = {
+    exportado: new Date().toISOString(),
+    cafeterias: leerTabla('cafeterias').map(limpiar),
+    menuSemanal: leerTabla('menu').map(limpiar),
+    reservas: leerTabla('reservas').map(limpiar),
+  };
+
+  const texto = JSON.stringify(volcado, null, 2);
+  Logger.log('Cafeterías: ' + volcado.cafeterias.length +
+             ' · Cartas: ' + volcado.menuSemanal.length +
+             ' · Reservas: ' + volcado.reservas.length);
+
+  // El registro corta los mensajes largos, así que el volcado va troceado.
+  const TROZO = 40000;
+  for (let i = 0; i < texto.length; i += TROZO) {
+    Logger.log('--- volcado ' + (Math.floor(i / TROZO) + 1) + ' ---\n' + texto.slice(i, i + TROZO));
+  }
+  return texto;
+}
+
+function hoyDelServidor() {
+  return Utilities.formatDate(
+    new Date(),
+    SpreadsheetApp.getActive().getSpreadsheetTimeZone(),
+    'yyyy-MM-dd'
+  );
+}
