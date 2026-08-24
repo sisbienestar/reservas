@@ -18,6 +18,7 @@ import { qs, pintar, bloqueEstado, prepararLogo } from './ui/dom.js';
 import { crearModalReserva } from './ui/modalReserva.js';
 import { montarModalReserva } from './ui/marcadoModalReserva.js';
 import * as tabla from './ui/tablaReservas.js';
+import { mostrarResumen } from './ui/resumenDelDia.js';
 
 import { PERMITIR_FIN_DE_SEMANA } from './config.js';
 import { paramUrl } from './utils/url.js';
@@ -30,6 +31,7 @@ const vista = {
   nombre: qs('#nombre-cafeteria'),
   ubicacion: qs('#ubicacion-cafeteria'),
   fecha: qs('#fecha-hoy'),
+  resumen: qs('#contenedor-resumen'),
   tabla: qs('#contenedor-tabla'),
   botonReservar: qs('#boton-reservar'),
   aviso: qs('#aviso'),
@@ -162,8 +164,15 @@ async function iniciar() {
 
 /* ── Tabla ────────────────────────────────────────────────────────────── */
 
-/** Pinta la tabla con lo que ya hay en `estado`. No consulta nada. */
+/**
+ * Pinta el consolidado y la tabla con lo que ya hay en `estado`.
+ *
+ * No consulta nada: las cuentas por plato y por cobro salen de las mismas
+ * reservas que ya se pintan debajo. Pedírselas al servidor habría añadido un
+ * viaje entero a cada refresco para contar lo que ya está en memoria.
+ */
 function pintarTabla() {
+  mostrarResumen(vista.resumen, estado.reservas);
   tabla.mostrarReservas(vista.tabla, estado.reservas, {
     idDestacado: estado.ultimaReservaId,
     alEditar: (reserva) => abrirFormulario(reserva),
@@ -203,6 +212,9 @@ async function refrescarTabla({ enSegundoPlano = false } = {}) {
     pintarTabla();
   } catch (error) {
     if (enSegundoPlano) return;
+    // El consolidado se va con la tabla: dejar las cifras de la consulta
+    // anterior encima de un mensaje de error las haría parecer vigentes.
+    mostrarResumen(vista.resumen, []);
     tabla.mostrarError(vista.tabla, error.message, () => refrescarTabla());
   }
 }
