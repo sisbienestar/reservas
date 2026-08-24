@@ -43,7 +43,7 @@
 const HOJAS = {
   cafeterias: {
     nombre: 'Cafeterias',
-    cabeceras: ['id', 'nombre', 'ubicacion', 'imagen', 'activa'],
+    cabeceras: ['id', 'codigo', 'nombre', 'ubicacion', 'imagen', 'activa', 'platos_fijos'],
   },
   menu: {
     nombre: 'MenuSemanal',
@@ -59,7 +59,7 @@ const HOJAS = {
 };
 
 /** Columnas que guardan JSON serializado: una hoja no tiene arreglos. */
-const COLUMNAS_JSON = ['opciones', 'historial'];
+const COLUMNAS_JSON = ['opciones', 'historial', 'platos_fijos'];
 
 /** Días sin servicio: 0 = lunes … 6 = domingo. Misma regla que el frontend. */
 const DIAS_SIN_SERVICIO = [5, 6];
@@ -199,6 +199,13 @@ function normalizarCelda(cabecera, valor) {
     return String(valor === null || valor === undefined ? '' : valor);
   }
 
+  // El código, a dos dígitos: si la hoja lo leyó como número, '01' volvió
+  // como 1 y el identificador saldría «1-260823-001».
+  if (cabecera === 'codigo') {
+    const texto = String(valor === null || valor === undefined ? '' : valor);
+    return texto && texto.length < 2 ? '0' + texto : texto;
+  }
+
   if (cabecera === 'activa') {
     return valor === true || String(valor).toUpperCase() === 'TRUE';
   }
@@ -287,6 +294,53 @@ function sumarDias(fechaISO, n) {
   return d.getFullYear() + '-' + (mes.length < 2 ? '0' + mes : mes) + '-' + (dia.length < 2 ? '0' + dia : dia);
 }
 
+/* ── Identificador de reserva: 01-260823-001 ─────────────────────────────
+ *
+ *   01      código de la cafetería (2 dígitos)
+ *   260823  fecha AAMMDD
+ *   001     consecutivo de esa cafetería ESE día
+ *
+ * Se puede leer, dictar por teléfono y buscar en la hoja. El consecutivo
+ * nunca se reutiliza, ni siquiera si la reserva se cancela: reciclarlo haría
+ * que dos reservas distintas compartieran identificador.
+ */
+
+function codigoDeFecha(fechaISO) {
+  const p = String(fechaISO).split('-');
+  return p[0].slice(2) + p[1] + p[2];
+}
+
+function construirIdReserva(codigoCafeteria, fechaISO, consecutivo) {
+  let numero = String(consecutivo);
+  while (numero.length < 3) numero = '0' + numero;
+  return codigoCafeteria + '-' + codigoDeFecha(fechaISO) + '-' + numero;
+}
+
+var FORMATO_ID = /^(\d{2})-(\d{6})-(\d{3,})$/;
+
+/** Descompone el identificador, o null si es del formato antiguo. */
+function partesIdReserva(id) {
+  const m = FORMATO_ID.exec(String(id || ''));
+  return m ? { cafeteria: m[1], fecha: m[2], consecutivo: m[3] } : null;
+}
+
+/**
+ * Siguiente consecutivo de esa cafetería ese día.
+ *
+ * Sobre el MÁXIMO existente y no sobre la cantidad: si falta un número —una
+ * fila borrada a mano de la hoja— contar daría uno ya usado.
+ */
+function siguienteConsecutivo(reservas, cafeteriaId, fecha) {
+  let mayor = 0;
+  for (let i = 0; i < reservas.length; i++) {
+    const r = reservas[i];
+    if (r.cafeteria_id !== cafeteriaId || String(r.fecha) !== String(fecha)) continue;
+    const partes = partesIdReserva(r.id);
+    if (partes) mayor = Math.max(mayor, Number(partes.consecutivo));
+  }
+  return mayor + 1;
+}
+
 /** Cuántos días cubre un rango, ambos extremos incluidos. */
 function diasEntre(desde, hasta) {
   const a = String(desde).split('-');
@@ -324,14 +378,65 @@ function cartaDe(fecha) {
   return null;
 }
 
-function buscarPlato(fecha, menuId) {
+/**
+ * Lo que se puede pedir ese día en esa cafetería: la carta común más los
+ * platos fijos de la sede.
+ *
+ * La carta del día SIGUE siendo la misma para todo el campus. Lo que varía
+ * por sede son los productos permanentes —Mini Lunch, los especiales—, que no
+ * dependen del día y por eso viven en la cafetería y no en la carta.
+ *
+ * Se ofrecen todos los días CON SERVICIO, haya carta publicada o no.
+ */
+function ofertaDelDia(cafeteriaId, fecha) {
+  if (!esDiaDeServicio(fecha)) return [];
+
   const carta = cartaDe(fecha);
-  if (!carta) return null;
-  const opciones = carta.opciones || [];
+  const opciones = carta ? carta.opciones.slice() : [];
+
+  const cafeterias = leerTabla('cafeterias');
+  let fijos = [];
+  for (let i = 0; i < cafeterias.length; i++) {
+    if (cafeterias[i].id === cafeteriaId) fijos = cafeterias[i].platos_fijos || [];
+  }
+
+  for (let i = 0; i < fijos.length; i++) {
+    const nombre = String(fijos[i]).trim();
+    const id = aSlug(nombre);
+    if (!id) continue;
+    // Si coincide con uno de la carta del día, gana el del día: dos opciones
+    // con el mismo id dejarían la reserva sin saber a cuál apunta.
+    let repetido = false;
+    for (let j = 0; j < opciones.length; j++) {
+      if (opciones[j].id === id) repetido = true;
+    }
+    if (!repetido) opciones.push({ id: id, nombre: nombre, fijo: true });
+  }
+  return opciones;
+}
+
+/** Plato válido ese día en esa cafetería, o null. */
+function buscarPlato(cafeteriaId, fecha, menuId) {
+  const opciones = ofertaDelDia(cafeteriaId, fecha);
   for (let i = 0; i < opciones.length; i++) {
     if (opciones[i].id === menuId) return opciones[i];
   }
   return null;
+}
+
+/** Quita vacíos y repetidos de la lista de platos fijos. */
+function limpiarPlatosFijos(lista) {
+  const nombres = [];
+  const ids = {};
+  const brutos = lista || [];
+  for (let i = 0; i < brutos.length; i++) {
+    const nombre = String(brutos[i]).trim();
+    const id = aSlug(nombre);
+    if (!nombre || !id || ids[id]) continue;
+    ids[id] = true;
+    nombres.push(nombre);
+  }
+  return nombres;
 }
 
 /** ¿Hay otra reserva ACTIVA de ese móvil, ese día y esa cafetería? */
@@ -464,12 +569,23 @@ const ACCIONES = {
       }
     }
 
+    // El siguiente número libre, no la cantidad de filas: si alguna se
+    // borrara a mano de la hoja, contar daría un código repetido.
+    let mayorCodigo = 0;
+    for (let i = 0; i < filas.length; i++) {
+      mayorCodigo = Math.max(mayorCodigo, Number(filas[i].codigo) || 0);
+    }
+    let codigoNuevo = String(mayorCodigo + 1);
+    if (codigoNuevo.length < 2) codigoNuevo = '0' + codigoNuevo;
+
     const cafeteria = {
       id: id,
+      codigo: codigoNuevo,
       nombre: nombre,
       ubicacion: String(params.ubicacion || '').trim(),
       imagen: '',
       activa: true,
+      platos_fijos: limpiarPlatosFijos(params.platos_fijos),
     };
     agregar('cafeterias', cafeteria);
     return exito(cafeteria);
@@ -488,6 +604,7 @@ const ACCIONES = {
       if (filas[i].id === params.id) {
         filas[i].nombre = nombre;
         filas[i].ubicacion = String(params.ubicacion || '').trim();
+        filas[i].platos_fijos = limpiarPlatosFijos(params.platos_fijos);
         guardar('cafeterias', filas[i]);
         return exito(limpiar(filas[i]));
       }
@@ -505,7 +622,17 @@ const ACCIONES = {
 
   /* ── Menú ──────────────────────────────────────────────────────────── */
 
+  /**
+   * La oferta de un día. Con `cafeteria_id` incluye sus platos fijos; sin él
+   * devuelve solo la carta común, que es lo que edita el administrador.
+   */
   'menu.delDia': function (params) {
+    if (params.cafeteria_id) {
+      return exito({
+        fecha: params.fecha,
+        opciones: ofertaDelDia(params.cafeteria_id, params.fecha),
+      });
+    }
     const carta = cartaDe(params.fecha);
     // Sin carta publicada no es un error: es un día sin menú.
     return exito(carta
@@ -612,11 +739,11 @@ const ACCIONES = {
 
   'reservas.crear': function (params) {
     const cafeterias = leerTabla('cafeterias');
-    let existe = false;
+    let cafeteria = null;
     for (let i = 0; i < cafeterias.length; i++) {
-      if (cafeterias[i].id === params.cafeteria_id) existe = true;
+      if (cafeterias[i].id === params.cafeteria_id) cafeteria = cafeterias[i];
     }
-    if (!existe) {
+    if (!cafeteria) {
       return fallo('CAFETERIA_NO_ENCONTRADA', 'No existe la cafetería «' + params.cafeteria_id + '».');
     }
 
@@ -627,7 +754,7 @@ const ACCIONES = {
       return fallo('SIN_SERVICIO', 'Los sábados y domingos no hay servicio de almuerzo.');
     }
 
-    const plato = buscarPlato(params.fecha, params.menu_id);
+    const plato = buscarPlato(params.cafeteria_id, params.fecha, params.menu_id);
     if (!plato) return fallo('MENU_INVALIDO', 'Ese plato no está en el menú de hoy.');
 
     const reservas = leerTabla('reservas');
@@ -637,7 +764,11 @@ const ACCIONES = {
 
     const ahora = ahoraISO();
     const reserva = {
-      id: nuevoId('r'),
+      id: construirIdReserva(
+        cafeteria.codigo,
+        params.fecha,
+        siguienteConsecutivo(reservas, params.cafeteria_id, params.fecha),
+      ),
       nombre: String(params.nombre).trim(),
       telefono: String(params.telefono),
       cafeteria_id: params.cafeteria_id,
@@ -666,7 +797,7 @@ const ACCIONES = {
       return fallo('DATOS_INCOMPLETOS', 'Faltan datos obligatorios en la reserva.');
     }
 
-    const plato = buscarPlato(reserva.fecha, params.menu_id);
+    const plato = buscarPlato(reserva.cafeteria_id, reserva.fecha, params.menu_id);
     if (!plato) return fallo('MENU_INVALIDO', 'Ese plato no está en la carta de ese día.');
 
     if (telefonoYaReservo(reservas, reserva.cafeteria_id, reserva.fecha, params.telefono, reserva.id)) {
@@ -822,7 +953,9 @@ function configurarHojas() {
     // Fechas y móviles como TEXTO, no como fecha ni número. Si la hoja los
     // interpreta, '2026-08-24' vuelve como objeto Date y el móvil pierde
     // cualquier cero inicial: dos clases enteras de error que así no existen.
-    const columnasTexto = ['fecha', 'telefono', 'timestamp', 'id'];
+    // 'codigo' incluido: si la hoja lo lee como número, '01' se convierte en 1
+    // y el identificador saldría «1-260823-001».
+    const columnasTexto = ['fecha', 'telefono', 'timestamp', 'id', 'codigo'];
     definicion.cabeceras.forEach(function (cabecera, i) {
       if (columnasTexto.indexOf(cabecera) !== -1) {
         h.getRange(2, i + 1, h.getMaxRows() - 1, 1).setNumberFormat('@');
@@ -839,15 +972,20 @@ function sembrarCafeterias() {
   if (existentes.length > 0) return;
 
   const semillas = [
-    ['bienestar-pro', 'Bienestar Pro', 'Campus central', 'assets/img/bienestar-pro.jpg'],
-    ['camilo-torres', 'Camilo Torres', 'Auditorio Camilo Torres', 'assets/img/camilo-torres.jpg'],
-    ['bienestar-universitario', 'Bienestar Universitario', 'Edificio de Bienestar Universitario', 'assets/img/bienestar-universitario.jpeg'],
-    ['administracion-3', 'Administración 3', 'Edificio de Administración 3', 'assets/img/administracion3.jpg'],
+    ['bienestar-pro', '01', 'Bienestar Pro', 'Campus central', 'assets/img/bienestar-pro.jpg',
+      ['Especial carne', 'Especial pollo', 'Especial cerdo']],
+    ['camilo-torres', '02', 'Camilo Torres', 'Auditorio Camilo Torres', 'assets/img/camilo-torres.jpg',
+      ['Mini Lunch']],
+    ['bienestar-universitario', '03', 'Bienestar Universitario', 'Edificio de Bienestar Universitario', 'assets/img/bienestar-universitario.jpeg',
+      ['Mini Lunch']],
+    ['administracion-3', '04', 'Administración 3', 'Edificio de Administración 3', 'assets/img/administracion3.jpg',
+      []],
   ];
 
   semillas.forEach(function (s) {
     agregar('cafeterias', {
-      id: s[0], nombre: s[1], ubicacion: s[2], imagen: s[3], activa: true,
+      id: s[0], codigo: s[1], nombre: s[2], ubicacion: s[3], imagen: s[4],
+      activa: true, platos_fijos: s[5],
     });
   });
 }
@@ -904,6 +1042,99 @@ function exportarTodo() {
     Logger.log('--- volcado ' + (Math.floor(i / TROZO) + 1) + ' ---\n' + texto.slice(i, i + TROZO));
   }
   return texto;
+}
+
+/**
+ * Pone al día una hoja creada ANTES del identificador nuevo.
+ *
+ * Ejecutar UNA VEZ desde el editor, después de pegar esta versión. Hace dos
+ * cosas y ninguna destruye nada:
+ *
+ *  1. Añade la columna `codigo` a 'Cafeterias' si falta, y reparte 01, 02…
+ *     por el orden en que están en la hoja.
+ *  2. Reescribe los identificadores de reserva del formato antiguo al nuevo,
+ *     numerando por cafetería y día en orden de llegada.
+ *
+ * El punto 2 cambia claves primarias, y por eso conviene hacerlo antes de que
+ * haya reservas de las que dependa alguien. Es seguro porque nada fuera de la
+ * hoja guarda esos identificadores: la interfaz siempre los relee.
+ *
+ * Es idempotente: las reservas que ya tengan el formato nuevo no se tocan.
+ */
+function migrarAIdentificadorNuevo() {
+  const hojaCafeterias = hoja('cafeterias');
+  const cabeceras = hojaCafeterias.getRange(1, 1, 1, hojaCafeterias.getLastColumn())
+    .getValues()[0].map(String);
+
+  // 1. La columna 'codigo', si no está.
+  if (cabeceras.indexOf('codigo') === -1) {
+    hojaCafeterias.insertColumnAfter(1);
+    hojaCafeterias.getRange(1, 2).setValue('codigo').setFontWeight('bold');
+    hojaCafeterias.getRange(2, 2, Math.max(hojaCafeterias.getMaxRows() - 1, 1), 1)
+      .setNumberFormat('@');
+    Logger.log('Añadida la columna «codigo» a Cafeterias.');
+  }
+
+  // 1b. La columna 'platos_fijos', si falta. Va al final, así que basta con
+  // escribir la cabecera en la primera columna libre.
+  const cabecerasAhora = hojaCafeterias.getRange(1, 1, 1, hojaCafeterias.getLastColumn())
+    .getValues()[0].map(String);
+  if (cabecerasAhora.indexOf('platos_fijos') === -1) {
+    hojaCafeterias.getRange(1, cabecerasAhora.length + 1)
+      .setValue('platos_fijos').setFontWeight('bold');
+    Logger.log('Añadida la columna «platos_fijos» a Cafeterias.');
+  }
+
+  const cafeterias = leerTabla('cafeterias');
+  const codigoPorId = {};
+  let siguiente = 1;
+  for (let i = 0; i < cafeterias.length; i++) {
+    if (!cafeterias[i].codigo) {
+      let codigo = String(siguiente);
+      if (codigo.length < 2) codigo = '0' + codigo;
+      cafeterias[i].codigo = codigo;
+      guardar('cafeterias', cafeterias[i]);
+    }
+    siguiente = Math.max(siguiente, Number(cafeterias[i].codigo) || 0) + 1;
+    codigoPorId[cafeterias[i].id] = cafeterias[i].codigo;
+  }
+
+  // 2. Los identificadores de reserva.
+  const reservas = leerTabla('reservas');
+  // Por orden de llegada dentro de cada cafetería y día, para que el
+  // consecutivo signifique lo mismo que en las reservas nuevas.
+  reservas.sort(function (a, b) {
+    return String(a.timestamp).localeCompare(String(b.timestamp));
+  });
+
+  const contador = {};
+  let migradas = 0;
+
+  for (let i = 0; i < reservas.length; i++) {
+    const r = reservas[i];
+    const clave = r.cafeteria_id + '|' + r.fecha;
+    const partes = partesIdReserva(r.id);
+
+    if (partes) {
+      // Ya está en el formato nuevo: solo se anota para no repetir su número.
+      contador[clave] = Math.max(contador[clave] || 0, Number(partes.consecutivo));
+      continue;
+    }
+
+    const codigo = codigoPorId[r.cafeteria_id];
+    if (!codigo) {
+      Logger.log('SIN CÓDIGO · la reserva ' + r.id + ' apunta a «' + r.cafeteria_id + '», que no existe. Se deja como está.');
+      continue;
+    }
+
+    contador[clave] = (contador[clave] || 0) + 1;
+    r.id = construirIdReserva(codigo, r.fecha, contador[clave]);
+    guardar('reservas', r);
+    migradas++;
+  }
+
+  Logger.log('Identificadores migrados: ' + migradas + ' de ' + reservas.length + ' reservas.');
+  SpreadsheetApp.getActive().toast('Migración terminada. Revisa el registro.');
 }
 
 function hoyDelServidor() {

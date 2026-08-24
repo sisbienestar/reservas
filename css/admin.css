@@ -116,8 +116,10 @@
 
 .tabla--admin { min-width: 860px; }
 
-.tabla--admin th:first-child,
-.tabla--admin td:first-child { width: auto; }
+/* La tabla del administrador empieza por el identificador entero, que ocupa
+   lo que ocupa; el reparto de anchos de la tabla del día no aplica aquí. */
+.tabla--admin th:nth-child(2),
+.tabla--admin td:nth-child(2) { width: auto; }
 
 .tabla--totales { min-width: 320px; margin-top: var(--e-4); }
 

@@ -38,6 +38,10 @@ export function mostrarCafeterias(contenedor, cafeterias, acciones) {
         crear('td', { clase: 'tabla__nombre', texto: c.nombre }),
         crear('td', { clase: 'tabla__menu', texto: c.ubicacion || '—' }),
         crear('td', {
+          clase: 'tabla__menu',
+          texto: (c.platosFijos ?? []).join(' · ') || '—',
+        }),
+        crear('td', {
           hijos: [
             crear('span', {
               clase: `marca-estado marca-estado--${c.activa ? 'activa' : 'cancelada'}`,
@@ -70,6 +74,7 @@ export function mostrarCafeterias(contenedor, cafeterias, acciones) {
             hijos: [
               crear('th', { texto: 'Cafetería', attrs: { scope: 'col' } }),
               crear('th', { texto: 'Ubicación', attrs: { scope: 'col' } }),
+              crear('th', { texto: 'Platos fijos', attrs: { scope: 'col' } }),
               crear('th', { texto: 'Estado', attrs: { scope: 'col' } }),
               crear('th', {
                 clase: 'tabla__acciones',

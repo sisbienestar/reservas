@@ -109,6 +109,7 @@ reservasCafeterias/
     ├── utils/
     │   ├── fechas.js          Rangos, semanas, formatos
     │   ├── telefono.js        Normaliza y formatea el móvil
+    │   ├── idReserva.js       El identificador 01-260823-001
     │   ├── texto.js           Slugs y búsqueda sin acentos
     │   ├── csv.js             Exportación que Excel abre bien
     │   └── url.js
@@ -318,7 +319,7 @@ que es la frontera entre la forma de la API y la forma de la UI.
 
 | Hoja / tabla   | Campos |
 |---|---|
-| `Cafeterias`   | `id` · `nombre` · `ubicacion` · `imagen` · `activa` |
+| `Cafeterias`   | `id` · `codigo` · `nombre` · `ubicacion` · `imagen` · `activa` |
 | `MenuSemanal`  | `id` · `fecha` · `opciones[{id, nombre}]` |
 | `Reservas`     | `id` · `nombre` · `telefono` · `cafeteria_id` · `fecha` · `menu_id` · `menu_nombre` · `estado` · `timestamp` · `historial[]` |
 

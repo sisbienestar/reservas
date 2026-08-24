@@ -77,6 +77,7 @@ export function mostrarReservas(contenedor, reservas, { idDestacado, alEditar } 
     hijos: [
       crear('tr', {
         hijos: [
+          crear('th', { clase: 'tabla__numero-reserva', texto: 'N.º', attrs: { scope: 'col' } }),
           crear('th', { texto: 'Nombre', attrs: { scope: 'col' } }),
           crear('th', { texto: 'Menú del día', attrs: { scope: 'col' } }),
           crear('th', { texto: 'Móvil', attrs: { scope: 'col' } }),
@@ -97,6 +98,9 @@ export function mostrarReservas(contenedor, reservas, { idDestacado, alEditar } 
       crear('tr', {
         clase: reserva.id === idDestacado ? 'tabla__fila tabla__fila--nueva' : 'tabla__fila',
         hijos: [
+          // Solo el consecutivo: dentro de la tabla del día, la cafetería y
+          // la fecha son las mismas en todas las filas y repetirlas sería ruido.
+          crear('td', { clase: 'tabla__numero-reserva', texto: reserva.numero || '—' }),
           crear('td', { clase: 'tabla__nombre', texto: reserva.nombre }),
           crear('td', { clase: 'tabla__menu', texto: reserva.menuNombre }),
           crear('td', {

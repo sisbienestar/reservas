@@ -21,16 +21,23 @@ import { hoyISO } from '../utils/fechas.js';
  */
 
 function normalizarOpcion(opcion) {
-  return { id: opcion.id, nombre: opcion.nombre };
+  // `fijo` distingue los productos permanentes de la sede —Mini Lunch, los
+  // especiales— de los platos del día. El formulario los agrupa por separado.
+  return { id: opcion.id, nombre: opcion.nombre, fijo: opcion.fijo === true };
 }
 
 /**
- * Opciones de menú de un día.
- * Devuelve [] si no hay carta publicada: es un caso válido, no un error.
+ * Lo que se puede pedir ese día en esa cafetería: la carta común del campus
+ * más los platos fijos de la sede (Mini Lunch, los especiales…).
+ *
+ * Sin `cafeteriaId` devuelve solo la carta común, que es lo que administra el
+ * editor semanal.
+ *
+ * Devuelve [] si no hay nada disponible: es un caso válido, no un error.
  * @returns {Promise<OpcionMenu[]>}
  */
-export async function getMenuDelDia(fecha = hoyISO()) {
-  const registro = await pedir('menu.delDia', { fecha });
+export async function getMenuDelDia(cafeteriaId, fecha = hoyISO()) {
+  const registro = await pedir('menu.delDia', { fecha, cafeteria_id: cafeteriaId ?? '' });
   return (registro?.opciones ?? []).map(normalizarOpcion);
 }
 

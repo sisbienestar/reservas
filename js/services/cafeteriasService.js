@@ -12,21 +12,25 @@ import { pedir } from './api.js';
 /**
  * @typedef {Object} Cafeteria
  * @property {string} id
+ * @property {string} codigo   dos dígitos, prefijo del id de sus reservas
  * @property {string} nombre
  * @property {string} ubicacion
  * @property {string} imagen
  * @property {boolean} activa
+ * @property {string[]} platosFijos   productos que ofrece todos los días
  */
 
 /** @returns {Cafeteria} */
 function normalizar(fila) {
   return {
     id: fila.id,
+    codigo: fila.codigo ?? '',
     nombre: fila.nombre,
     ubicacion: fila.ubicacion ?? '',
     imagen: fila.imagen ?? '',
     // Una fila de la hoja sin la columna todavía se da por activa.
     activa: fila.activa !== false,
+    platosFijos: Array.isArray(fila.platos_fijos) ? fila.platos_fijos : [],
   };
 }
 
@@ -50,7 +54,11 @@ export async function getCafeterias({ incluirInactivas = false } = {}) {
  * @returns {Promise<Cafeteria>}
  */
 export async function crearCafeteria(datos) {
-  return normalizar(await pedir('cafeterias.crear', datos));
+  return normalizar(await pedir('cafeterias.crear', {
+    nombre: datos.nombre,
+    ubicacion: datos.ubicacion,
+    platos_fijos: datos.platosFijos ?? [],
+  }));
 }
 
 /**
@@ -60,7 +68,12 @@ export async function crearCafeteria(datos) {
  * @returns {Promise<Cafeteria>}
  */
 export async function actualizarCafeteria(id, datos) {
-  return normalizar(await pedir('cafeterias.actualizar', { id, ...datos }));
+  return normalizar(await pedir('cafeterias.actualizar', {
+    id,
+    nombre: datos.nombre,
+    ubicacion: datos.ubicacion,
+    platos_fijos: datos.platosFijos ?? [],
+  }));
 }
 
 /** Cierra una cafetería: deja de ofrecerse, pero sus reservas siguen intactas. */

@@ -12,7 +12,7 @@ import { crear, pintar, bloqueEstado } from './dom.js';
 import { formatearTelefono } from '../utils/telefono.js';
 import { formatearFechaCorta, nombreDiaCorto } from '../utils/fechas.js';
 
-const COLUMNAS = ['Fecha', 'Cafetería', 'Nombre', 'Móvil', 'Menú del día', 'Estado'];
+const COLUMNAS = ['N.º de reserva', 'Fecha', 'Cafetería', 'Nombre', 'Móvil', 'Menú del día', 'Estado'];
 
 export function mostrarCargando(contenedor) {
   pintar(contenedor, bloqueEstado({ tipo: 'cargando', titulo: 'Buscando reservas…' }));
@@ -86,6 +86,9 @@ export function mostrarReservas(contenedor, reservas, opciones) {
       crear('tr', {
         clase: r.estado === 'cancelada' ? 'tabla__fila tabla__fila--apagada' : 'tabla__fila',
         hijos: [
+          // El identificador entero: esta tabla cruza sedes y fechas, así
+          // que el consecutivo suelto no distinguiría nada.
+          crear('td', { clase: 'tabla__id-reserva', texto: r.id }),
           crear('td', {
             clase: 'tabla__fecha',
             texto: `${nombreDiaCorto(r.fecha)} ${formatearFechaCorta(r.fecha)}`,

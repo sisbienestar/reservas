@@ -245,11 +245,14 @@
   color: var(--c-texto);
 }
 
-/* Nombre y menú se reparten el ancho sobrante; móvil y botón ocupan lo justo.
-   Sin esto las cuatro columnas se reparten a partes iguales y el nombre —el
-   dato que más varía de largo— es el que se parte en dos líneas. */
-.tabla th:first-child,
-.tabla td:first-child { width: 32%; }
+/* El nombre se lleva el ancho sobrante; número, móvil y botón ocupan lo justo.
+   Sin esto las columnas se reparten a partes iguales y el nombre —el dato que
+   más varía de largo— es el que se parte en dos líneas.
+
+   Va en la SEGUNDA columna, no en la primera: desde que la tabla del día
+   empieza por el n.º de reserva, la primera es la más estrecha de todas. */
+.tabla th:nth-child(2),
+.tabla td:nth-child(2) { width: 32%; }
 
 .tabla__menu { color: var(--c-texto-2); }
 
@@ -604,3 +607,27 @@ select.campo__control {
   font-size: var(--texto-sm);
   color: var(--c-texto);
 }
+
+/* Identificador de la reserva que se está editando: 01-260823-001. Va en
+   tabular para que los dígitos no bailen, y discreto porque es una etiqueta,
+   no un dato que haya que leer siempre. */
+.modal__identificador {
+  font-size: var(--texto-xs);
+  color: var(--c-texto-3);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  margin-top: calc(var(--e-2) * -1);
+}
+
+/* Columnas de identificador: numéricas, alineadas y sin partirse. */
+.tabla__numero-reserva,
+.tabla__id-reserva {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--c-texto-2);
+}
+
+.tabla__numero-reserva { width: 1%; }
+
+th.tabla__numero-reserva,
+td.tabla__numero-reserva { padding-right: var(--e-3); }

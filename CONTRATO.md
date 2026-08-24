@@ -57,6 +57,7 @@ cada servicio en su función `normalizar`, así que el backend habla siempre en
 ```jsonc
 {
   "id": "bienestar-pro",          // slug del nombre; NO editable
+  "codigo": "01",                 // 2 dígitos; prefijo del id de sus reservas
   "nombre": "Bienestar Pro",
   "ubicacion": "Campus central",
   "imagen": "assets/img/bienestar-pro.jpg",
@@ -79,7 +80,7 @@ La carta se indexa **solo por fecha**: las cuatro sedes sirven lo mismo.
 
 ```jsonc
 {
-  "id": "r-1755950000-a1b2c",
+  "id": "01-260823-001",          // ver «El identificador» más abajo
   "nombre": "Laura Camila Ardila",
   "telefono": "3001247856",       // diez dígitos, SIEMPRE cadena
   "cafeteria_id": "bienestar-pro",
@@ -99,6 +100,32 @@ La carta se indexa **solo por fecha**: las cuatro sedes sirven lo mismo.
 
 `campo` es `"nombre"`, `"telefono"` o `"menu"`. `tipo` es `"creacion"`,
 `"modificacion"` o `"cancelacion"`.
+
+### El identificador de una reserva
+
+    01-260823-001
+    ▲   ▲      ▲
+    │   │      └─ consecutivo de esa cafetería ESE día (3 dígitos)
+    │   └──────── fecha AAMMDD
+    └──────────── `codigo` de la cafetería (2 dígitos)
+
+**Lo asigna el servidor, nunca el cliente.** El consecutivo depende de lo que
+ya hay en la base de datos, y dos mostradores registrando a la vez calcularían
+el mismo número. En Apps Script lo protege el bloqueo de script; en una base de
+datos de verdad, la clave primaria y una transacción.
+
+Tres reglas:
+
+1. **El consecutivo es por cafetería y por día.** La primera reserva de la
+   mañana en cada sede es la 001. El número suelto no identifica nada: por eso
+   los tres campos van juntos.
+2. **Nunca se reutiliza**, ni siquiera si la reserva se cancela. Se calcula
+   sobre el **máximo existente**, no sobre la cantidad: si falta un número,
+   contar daría uno ya usado y dos reservas compartirían identificador.
+3. **Si pasara de 999, crece a cuatro dígitos.** Preferible a repetir.
+
+Un identificador que no siga el formato —los de antes de este cambio— no debe
+romper nada: la interfaz lo detecta y muestra el número vacío en vez de fallar.
 
 ### Tipos que el frontend da por sentados
 
@@ -122,7 +149,7 @@ no es cosmético:
 |---|---|---|
 | `cafeterias.listar` | `incluir_inactivas?` | `Cafeteria[]` — sin el flag, solo las activas |
 | `cafeterias.obtener` | `id` | `Cafeteria` |
-| `cafeterias.crear` | `nombre`, `ubicacion?` | `Cafeteria` — el `id` lo deriva el servidor |
+| `cafeterias.crear` | `nombre`, `ubicacion?` | `Cafeteria` — el `id` y el `codigo` los asigna el servidor |
 | `cafeterias.actualizar` | `id`, `nombre`, `ubicacion` | `Cafeteria` |
 | `cafeterias.archivar` | `id` | `Cafeteria` con `activa:false` |
 | `cafeterias.reactivar` | `id` | `Cafeteria` con `activa:true` |

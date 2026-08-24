@@ -61,6 +61,7 @@ const vista = {
   formularioCafeteria: qs('#formulario-cafeteria'),
   cafeteriaNombre: qs('#cafeteria-nombre'),
   cafeteriaUbicacion: qs('#cafeteria-ubicacion'),
+  cafeteriaFijos: qs('#cafeteria-fijos'),
   botonGuardarCafeteria: qs('#boton-guardar-cafeteria'),
   botonCancelarEdicion: qs('#boton-cancelar-edicion'),
   avisoCafeteria: qs('#aviso-cafeteria'),
@@ -259,7 +260,7 @@ async function abrirEdicion(reserva) {
     // La carta se pide para la fecha DE LA RESERVA, no para hoy: se está
     // corrigiendo una reserva que puede ser de hace tres semanas, y la carta
     // que la valida es la de aquel día.
-    const menu = await getMenuDelDia(reserva.fecha);
+    const menu = await getMenuDelDia(reserva.cafeteriaId, reserva.fecha);
     if (menu.length === 0) {
       mostrarAviso(
         vista.aviso,
@@ -392,6 +393,7 @@ function empezarEdicionCafeteria(cafeteria) {
   estado.cafeteriaEnEdicion = cafeteria;
   vista.cafeteriaNombre.value = cafeteria.nombre;
   vista.cafeteriaUbicacion.value = cafeteria.ubicacion;
+  vista.cafeteriaFijos.value = (cafeteria.platosFijos ?? []).join('\n');
   vista.botonGuardarCafeteria.textContent = 'Guardar cambios';
   vista.botonCancelarEdicion.hidden = false;
   ocultarAviso(vista.avisoCafeteria);
@@ -410,6 +412,9 @@ async function guardarCafeteria(evento) {
   const datos = {
     nombre: vista.cafeteriaNombre.value.trim(),
     ubicacion: vista.cafeteriaUbicacion.value.trim(),
+    // Un plato por línea, como en el editor de la carta: el número de
+    // productos fijos cambia de una sede a otra y el texto libre lo absorbe.
+    platosFijos: vista.cafeteriaFijos.value.split('\n').map((x) => x.trim()).filter(Boolean),
   };
 
   if (datos.nombre.length < 3) {

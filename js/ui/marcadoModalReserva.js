@@ -90,6 +90,12 @@ export function montarModalReserva(anfitrion = document.body) {
           cerrarCabecera,
         ],
       }),
+      // Solo al editar: identifica QUÉ reserva se está tocando, que en una
+      // tabla de veinte filas parecidas no es evidente.
+      crear('p', {
+        clase: 'modal__identificador',
+        attrs: { 'data-identificador': '', hidden: true },
+      }),
       crear('p', {
         clase: 'modal__nota',
         texto: 'Solo se registran reservas para el día de hoy.',

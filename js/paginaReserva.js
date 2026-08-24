@@ -140,9 +140,9 @@ async function abrirFormulario(reserva) {
   vista.botonReservar.disabled = true;
 
   try {
-    // La carta es la del día y es la misma en todo el campus: no se pasa la
-    // cafetería porque el menú ya no depende de ella.
-    const menu = await getMenuDelDia();
+    // Se pasa la cafetería: la carta del día es común a todo el campus, pero
+    // cada sede añade sus productos fijos —Mini Lunch, los especiales—.
+    const menu = await getMenuDelDia(estado.cafeteria.id);
 
     if (menu.length === 0) {
       mostrarAviso(

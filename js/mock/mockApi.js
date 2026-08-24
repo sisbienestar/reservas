@@ -27,6 +27,7 @@ import { CAFETERIAS } from './cafeterias.js';
 import { MENU_SEMANAL } from './menuSemanal.js';
 import { RESERVAS } from './reservas.js';
 import { aSlug, normalizarBusqueda } from '../utils/texto.js';
+import { construirIdReserva, partesIdReserva } from '../utils/idReserva.js';
 import { rangoDias, sumarDias, esDiaDeServicio, diasEntre } from '../utils/fechas.js';
 
 /** Tope del rango de consulta: un año natural cubre cualquier reporte. */
@@ -51,14 +52,78 @@ function esperar(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Limpia la lista de platos fijos: quita vacíos y repetidos por id.
+ * Dos platos con el mismo identificador dejarían una reserva sin saber a
+ * cuál de los dos apunta.
+ */
+function limpiarPlatosFijos(lista) {
+  const nombres = [];
+  const ids = new Set();
+  for (const bruto of lista ?? []) {
+    const nombre = String(bruto).trim();
+    const id = aSlug(nombre);
+    if (!nombre || !id || ids.has(id)) continue;
+    ids.add(id);
+    nombres.push(nombre);
+  }
+  return nombres;
+}
+
 /** Carta de un día. La misma para todas las sedes: la clave es la fecha. */
 function cartaDe(fecha) {
   return almacen.menuSemanal.find((m) => m.fecha === fecha) ?? null;
 }
 
-/** Plato de la carta de ese día, o null si no está en ella. */
-function buscarPlato(fecha, menuId) {
-  return cartaDe(fecha)?.opciones.find((o) => o.id === menuId) ?? null;
+/**
+ * Lo que se puede pedir ese día en esa cafetería: la carta común más los
+ * platos fijos de la sede.
+ *
+ * Aquí vuelve a entrar la cafetería en el menú, pero por un motivo distinto
+ * al de antes: la carta del día SIGUE siendo la misma para todo el campus. Lo
+ * que varía por sede son los productos permanentes —Mini Lunch, los
+ * especiales—, que no dependen del día.
+ *
+ * Los fijos se ofrecen todos los días CON SERVICIO, haya carta publicada o
+ * no: son parte de lo que esa sede vende siempre.
+ */
+function ofertaDelDia(cafeteriaId, fecha) {
+  if (!esDiaDeServicio(fecha)) return [];
+
+  const opciones = [...(cartaDe(fecha)?.opciones ?? [])];
+  const cafeteria = almacen.cafeterias.find((c) => c.id === cafeteriaId);
+
+  for (const nombre of cafeteria?.platos_fijos ?? []) {
+    const id = aSlug(nombre);
+    // Si el plato fijo coincide con uno de la carta del día, gana el del día:
+    // dos opciones con el mismo id dejarían la reserva sin saber a cuál apunta.
+    if (!id || opciones.some((o) => o.id === id)) continue;
+    opciones.push({ id, nombre, fijo: true });
+  }
+  return opciones;
+}
+
+/** Plato válido ese día en esa cafetería, o null. */
+function buscarPlato(cafeteriaId, fecha, menuId) {
+  return ofertaDelDia(cafeteriaId, fecha).find((o) => o.id === menuId) ?? null;
+}
+
+/**
+ * Siguiente consecutivo para esa cafetería ese día.
+ *
+ * Cuenta **todas** las reservas, también las canceladas: reciclar el número
+ * de una cancelada haría que dos reservas distintas compartieran
+ * identificador. Se calcula sobre el máximo existente y no sobre la cantidad,
+ * para que un hueco no provoque una colisión.
+ */
+function siguienteConsecutivo(cafeteriaId, fecha) {
+  let mayor = 0;
+  for (const r of almacen.reservas) {
+    if (r.cafeteria_id !== cafeteriaId || r.fecha !== fecha) continue;
+    const partes = partesIdReserva(r.id);
+    if (partes) mayor = Math.max(mayor, Number(partes.consecutivo));
+  }
+  return mayor + 1;
 }
 
 /**
@@ -159,9 +224,14 @@ const ACCIONES = {
       : fallo('CAFETERIA_NO_ENCONTRADA', `No existe la cafetería «${id}».`);
   },
 
-  'menu.delDia': ({ fecha }) => {
+  /**
+   * La oferta de un día. Con `cafeteria_id` incluye sus platos fijos; sin
+   * él devuelve solo la carta común, que es lo que edita el administrador.
+   */
+  'menu.delDia': ({ fecha, cafeteria_id }) => {
     // Sin carta publicada no es un error: es un día sin menú.
-    return exito(cartaDe(fecha) ?? { fecha, opciones: [] });
+    if (!cafeteria_id) return exito(cartaDe(fecha) ?? { fecha, opciones: [] });
+    return exito({ fecha, opciones: ofertaDelDia(cafeteria_id, fecha) });
   },
 
   'reservas.delDia': ({ cafeteria_id, fecha }) => {
@@ -193,7 +263,7 @@ const ACCIONES = {
       return fallo('SIN_SERVICIO', 'Los sábados y domingos no hay servicio de almuerzo.');
     }
 
-    const plato = buscarPlato(fecha, menu_id);
+    const plato = buscarPlato(cafeteria_id, fecha, menu_id);
     if (!plato) {
       return fallo('MENU_INVALIDO', 'Ese plato no está en el menú de hoy.');
     }
@@ -207,7 +277,7 @@ const ACCIONES = {
 
     const ahora = new Date().toISOString();
     const reserva = {
-      id: `r-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      id: construirIdReserva(cafeteria.codigo, fecha, siguienteConsecutivo(cafeteria_id, fecha)),
       nombre: nombre.trim(),
       telefono,
       cafeteria_id,
@@ -239,7 +309,7 @@ const ACCIONES = {
       return fallo('DATOS_INCOMPLETOS', 'Faltan datos obligatorios en la reserva.');
     }
 
-    const plato = buscarPlato(reserva.fecha, menu_id);
+    const plato = buscarPlato(reserva.cafeteria_id, reserva.fecha, menu_id);
     if (!plato) {
       return fallo('MENU_INVALIDO', 'Ese plato no está en la carta de ese día.');
     }
@@ -370,7 +440,7 @@ const ACCIONES = {
     });
   },
 
-  'cafeterias.crear': ({ nombre, ubicacion }) => {
+  'cafeterias.crear': ({ nombre, ubicacion, platos_fijos }) => {
     if (!nombre || !nombre.trim()) {
       return fallo('DATOS_INCOMPLETOS', 'La cafetería necesita al menos un nombre.');
     }
@@ -382,12 +452,18 @@ const ACCIONES = {
       return fallo('CAFETERIA_DUPLICADA', `Ya existe una cafetería con el id «${id}».`);
     }
 
+    // El código es el siguiente número libre, no la cantidad de cafeterías:
+    // si alguna se borrara de la hoja a mano, contar daría un código repetido.
+    const mayor = almacen.cafeterias.reduce((m, c) => Math.max(m, Number(c.codigo) || 0), 0);
+
     const cafeteria = {
       id,
+      codigo: String(mayor + 1).padStart(2, '0'),
       nombre: nombre.trim(),
       ubicacion: (ubicacion ?? '').trim(),
       imagen: '',
       activa: true,
+      platos_fijos: limpiarPlatosFijos(platos_fijos),
     };
     almacen.cafeterias.push(cafeteria);
     return exito(cafeteria);
@@ -397,7 +473,7 @@ const ACCIONES = {
    * El `id` no se puede cambiar: es la clave con la que miles de reservas
    * históricas apuntan a esta cafetería, y renombrarlo las dejaría huérfanas.
    */
-  'cafeterias.actualizar': ({ id, nombre, ubicacion }) => {
+  'cafeterias.actualizar': ({ id, nombre, ubicacion, platos_fijos }) => {
     const cafeteria = almacen.cafeterias.find((c) => c.id === id);
     if (!cafeteria) {
       return fallo('CAFETERIA_NO_ENCONTRADA', `No existe la cafetería «${id}».`);
@@ -408,6 +484,7 @@ const ACCIONES = {
 
     cafeteria.nombre = nombre.trim();
     cafeteria.ubicacion = (ubicacion ?? '').trim();
+    cafeteria.platos_fijos = limpiarPlatosFijos(platos_fijos);
     return exito(cafeteria);
   },
 

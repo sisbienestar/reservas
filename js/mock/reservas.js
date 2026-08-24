@@ -19,6 +19,8 @@
 
 import { hoyISO, sumarDias, lunesDeEstaSemana, esDiaDeServicio, rangoDias } from '../utils/fechas.js';
 import { MENU_SEMANAL, SEMANAS_ATRAS } from './menuSemanal.js';
+import { CAFETERIAS } from './cafeterias.js';
+import { construirIdReserva } from '../utils/idReserva.js';
 
 /**
  * Generador pseudoaleatorio con semilla (mulberry32).
@@ -104,6 +106,7 @@ function construirReservas() {
 
     for (const cafeteriaId of Object.keys(VOLUMEN_DIARIO)) {
 
+      const codigo = CAFETERIAS.find((c) => c.id === cafeteriaId).codigo;
       const [minimo, maximo] = VOLUMEN_DIARIO[cafeteriaId];
       const cuantas = entero(minimo, maximo);
       // El mock rechaza dos reservas del mismo móvil en la misma cafetería y
@@ -145,7 +148,9 @@ function construirReservas() {
         }
 
         reservas.push({
-          id: `r-${cafeteriaId}-${fecha}-${i}`,
+          // El consecutivo arranca en 1 cada día y en cada sede, igual que
+          // hará la API: el identificador dice de dónde y de cuándo es.
+          id: construirIdReserva(codigo, fecha, i + 1),
           nombre: `${elegir(NOMBRES)} ${elegir(APELLIDOS)}`,
           telefono,
           cafeteria_id: cafeteriaId,

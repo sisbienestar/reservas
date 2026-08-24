@@ -53,6 +53,7 @@ export function crearModalReserva({ dialogo, alCrear, alEditar, alCancelar }) {
   const cajaError = qs('[data-error-general]', dialogo);
   const botonConfirmar = qs('[data-confirmar]', dialogo);
   const botonCancelarReserva = qs('[data-cancelar-reserva]', dialogo);
+  const identificador = qs('[data-identificador]', dialogo);
   const bloqueHistorial = qs('[data-historial]', dialogo);
   const listaHistorial = qs('[data-historial-lista]', dialogo);
 
@@ -105,7 +106,6 @@ export function crearModalReserva({ dialogo, alCrear, alEditar, alCancelar }) {
     }
   });
 
-  /** El móvil sale ya normalizado a diez dígitos; null si no es válido. */
   /**
    * Cancelar desde dentro del modal.
    *
@@ -129,6 +129,7 @@ export function crearModalReserva({ dialogo, alCrear, alEditar, alCancelar }) {
     }
   });
 
+  /** El móvil sale ya normalizado a diez dígitos; null si no es válido. */
   function leerFormulario() {
     return {
       nombre: campoNombre.value.trim(),
@@ -238,12 +239,12 @@ export function crearModalReserva({ dialogo, alCrear, alEditar, alCancelar }) {
 
   /** Rellena el desplegable del menú y deja elegido el plato de la reserva. */
   function pintarMenu(menu, menuIdActual) {
+    // Una sola lista, sin encabezados. Los platos fijos van al final porque
+    // el servidor los devuelve así, no porque la vista los reordene.
     pintar(
       campoMenu,
       crear('option', { texto: 'Selecciona un plato', attrs: { value: '' } }),
-      ...menu.map((opcion) =>
-        crear('option', { texto: opcion.nombre, attrs: { value: opcion.id } }),
-      ),
+      ...menu.map((o) => crear('option', { texto: o.nombre, attrs: { value: o.id } })),
     );
     // Si el plato de una reserva vieja ya no está en la carta de hoy, el
     // value no existe y el select se queda en el placeholder: hay que elegir
@@ -266,6 +267,16 @@ export function crearModalReserva({ dialogo, alCrear, alEditar, alCancelar }) {
       ? 'Se puede cambiar el nombre, el móvil y el plato. Cada cambio queda en el historial.'
       : 'Solo se registran reservas para el día de hoy.';
     botonConfirmar.textContent = textoBotonGuardar();
+
+    // El identificador entero —cafetería, fecha y consecutivo— y no solo el
+    // número corto de la tabla: aquí es donde se comprueba que se está
+    // editando la reserva correcta, y para eso hacen falta las tres partes.
+    if (reserva && reserva.id) {
+      identificador.textContent = `Reserva n.º ${reserva.id}`;
+      identificador.hidden = false;
+    } else {
+      identificador.hidden = true;
+    }
 
     // Cancelar la reserva solo tiene sentido sobre una que ya existe.
     botonCancelarReserva.hidden = !reserva;

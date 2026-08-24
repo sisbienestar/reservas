@@ -9,6 +9,7 @@
 
 import { pedir } from './api.js';
 import { hoyISO } from '../utils/fechas.js';
+import { numeroDeReserva } from '../utils/idReserva.js';
 
 /**
  * @typedef {Object} CambioReserva
@@ -26,7 +27,8 @@ import { hoyISO } from '../utils/fechas.js';
 
 /**
  * @typedef {Object} Reserva
- * @property {string} id
+ * @property {string} id        '01-260823-001'
+ * @property {string} numero    los 3 últimos dígitos: '001'
  * @property {string} nombre
  * @property {string} telefono   diez dígitos, sin separadores
  * @property {string} cafeteriaId
@@ -42,6 +44,9 @@ import { hoyISO } from '../utils/fechas.js';
 function normalizar(fila) {
   return {
     id: fila.id,
+    // Se deriva una vez aquí y no en cada vista: la tabla enseña el número
+    // corto y el modal el identificador entero, pero los dos salen del id.
+    numero: numeroDeReserva(fila.id),
     nombre: fila.nombre,
     telefono: fila.telefono,
     cafeteriaId: fila.cafeteria_id,

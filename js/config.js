@@ -10,7 +10,7 @@
 export const FUENTE_DATOS = 'api';
 
 /** URL del despliegue de Google Apps Script (o del futuro backend propio). */
-export const API_BASE_URL = 'https://script.google.com/macros/s/AKfycbxDxdjZWcG41sAgbM2lCeaDGDR93upPKgBLMrU6ZE2C8DBX2z894saf4hcB8PosS5sV/exec';
+export const API_BASE_URL = 'https://script.google.com/macros/s/AKfycbzyGki7mT5H0cZCvrl6N9AwzO0OCFMNzhMic9Zdd-MuZlx7MqnAgD6pi2ED8r8d-Yzw/exec';
 
 /** Latencia simulada del mock, en ms. Sirve para ejercitar los estados de carga. */
 export const LATENCIA_MOCK_MS = 300;
@@ -29,7 +29,7 @@ export const LATENCIA_MOCK_MS = 300;
  * constante gemela en `apps-script/Codigo.gs` que también hay que apagar
  * —el backend aplica la regla por su cuenta, que para eso está—.
  */
-export const PERMITIR_FIN_DE_SEMANA = true;
+export const PERMITIR_FIN_DE_SEMANA = false;
 
 /**
  * Milisegundos antes de abortar una petición HTTP real.
