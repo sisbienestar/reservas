@@ -51,6 +51,11 @@
 
     <section class="bloque-tabla" aria-labelledby="titulo-tabla">
       <h2 class="seccion__titulo" id="titulo-tabla">Reservas de hoy</h2>
+      <!-- El consolidado va dentro de esta sección, no en una propia: habla
+           de las mismas reservas que la tabla y lo cubre su mismo título.
+           Sin aria-live a propósito — la tabla de abajo ya es una región en
+           vivo, y anunciar dos veces el mismo cambio estorba más que informa. -->
+      <div id="contenedor-resumen"></div>
       <div id="contenedor-tabla" aria-live="polite"></div>
     </section>
 
