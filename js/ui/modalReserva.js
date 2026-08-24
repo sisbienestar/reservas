@@ -42,6 +42,10 @@ const ETIQUETA_ASIENTO = {
  *        alCancelar(reserva) → Promise<boolean>. Devuelve `true` si la reserva
  *        se canceló de verdad y `false` si quien lo pidió se echó atrás: el
  *        modal solo se cierra en el primer caso.
+ *
+ *        Es OPCIONAL. Sin él, el botón «Cancelar reserva» no aparece: es como
+ *        la pantalla de mostrador impide anular reservas reutilizando este
+ *        mismo formulario.
  */
 export function crearModalReserva({ dialogo, alCrear, alEditar, alCancelar }) {
   const formulario = qs('form', dialogo);
@@ -50,6 +54,7 @@ export function crearModalReserva({ dialogo, alCrear, alEditar, alCancelar }) {
   const campoNombre = qs('#campo-nombre', dialogo);
   const campoTelefono = qs('#campo-telefono', dialogo);
   const campoMenu = qs('#campo-menu', dialogo);
+  const radios = (nombre) => qsa(`input[name="${nombre}"]`, dialogo);
   const cajaError = qs('[data-error-general]', dialogo);
   const botonConfirmar = qs('[data-confirmar]', dialogo);
   const botonCancelarReserva = qs('[data-cancelar-reserva]', dialogo);
@@ -115,30 +120,37 @@ export function crearModalReserva({ dialogo, alCrear, alEditar, alCancelar }) {
    * devuelva a la edición en la que se estaba.
    */
   botonCancelarReserva.addEventListener('click', async () => {
-    if (enviando || !enEdicion) return;
+    // El botón está oculto sin `alCancelar`, pero se comprueba igual: nada
+    // impide invocarlo desde la consola, y esta es la última barrera.
+    if (enviando || !enEdicion || !alCancelar) return;
 
     limpiarErrores();
-    bloquear(true);
+    bloquear(true, botonCancelarReserva, 'Cancelando…');
     try {
       const cancelada = await alCancelar(enEdicion);
-      bloquear(false);
+      bloquear(false, botonCancelarReserva);
       if (cancelada) dialogo.close();
     } catch (error) {
-      bloquear(false);
+      bloquear(false, botonCancelarReserva);
       mostrarErrorGeneral(error.message);
     }
   });
 
   /** El móvil sale ya normalizado a diez dígitos; null si no es válido. */
+  /** El valor marcado de un grupo de radios, o '' si no hay ninguno. */
+  const marcado = (nombre) => radios(nombre).find((r) => r.checked)?.value ?? '';
+
   function leerFormulario() {
     return {
       nombre: campoNombre.value.trim(),
       telefono: normalizarTelefono(campoTelefono.value),
       menuId: campoMenu.value,
+      medio: marcado('medio'),
+      pago: marcado('pago'),
     };
   }
 
-  function validar({ nombre, telefono, menuId }) {
+  function validar({ nombre, telefono, menuId, medio, pago }) {
     const errores = {};
     if (nombre.length < 3) {
       errores.nombre = 'Escribe el nombre completo de la persona.';
@@ -147,11 +159,21 @@ export function crearModalReserva({ dialogo, alCrear, alEditar, alCancelar }) {
       errores.telefono = 'Escribe un móvil de diez dígitos, por ejemplo 300 123 4567.';
     }
     if (!menuId) errores.menu = 'Elige una opción del menú.';
+    if (!medio) errores.medio = 'Indica si la reserva se hizo presencial o por teléfono.';
+    if (!pago) errores.pago = 'Indica si ya pagó o queda debiendo.';
     return errores;
   }
 
   function marcarErrores(errores) {
-    const campos = { nombre: campoNombre, telefono: campoTelefono, menu: campoMenu };
+    const campos = {
+      nombre: campoNombre,
+      telefono: campoTelefono,
+      menu: campoMenu,
+      // El foco va al primer radio del grupo: enfocar el <fieldset> no lleva
+      // a ninguna parte y quien navega con teclado se queda sin saber dónde.
+      medio: radios('medio')[0],
+      pago: radios('pago')[0],
+    };
     for (const [clave, mensaje] of Object.entries(errores)) {
       const campo = campos[clave];
       campo.setAttribute('aria-invalid', 'true');
@@ -163,9 +185,8 @@ export function crearModalReserva({ dialogo, alCrear, alEditar, alCancelar }) {
   }
 
   function limpiarErrores() {
-    [campoNombre, campoTelefono, campoMenu].forEach((campo) =>
-      campo.removeAttribute('aria-invalid'),
-    );
+    [campoNombre, campoTelefono, campoMenu, ...radios('medio'), ...radios('pago')]
+      .forEach((campo) => campo.removeAttribute('aria-invalid'));
     dialogo.querySelectorAll('[data-error]').forEach((n) => { n.textContent = ''; });
     cajaError.textContent = '';
     cajaError.hidden = true;
@@ -176,14 +197,35 @@ export function crearModalReserva({ dialogo, alCrear, alEditar, alCancelar }) {
     cajaError.hidden = false;
   }
 
-  function bloquear(estado) {
+  /**
+   * Bloquea el formulario mientras hay una petición en marcha.
+   *
+   * `enTrabajo` es el botón que se pulsó, y es el único que muestra el
+   * girador: si al cancelar la señal apareciera en «Guardar cambios», estaría
+   * apuntando a la acción equivocada.
+   */
+  function bloquear(estado, enTrabajo = botonConfirmar, texto = 'Guardando…') {
     enviando = estado;
     botonConfirmar.disabled = estado;
-    botonConfirmar.textContent = estado ? 'Guardando…' : textoBotonGuardar();
     botonCancelarReserva.disabled = estado;
     formulario.querySelectorAll('input, select').forEach((campo) => {
       campo.disabled = estado;
     });
+
+    if (estado) {
+      enTrabajo.setAttribute('aria-busy', 'true');
+      enTrabajo.replaceChildren(
+        crear('span', { clase: 'boton__girador', attrs: { 'aria-hidden': 'true' } }),
+        document.createTextNode(texto),
+      );
+    } else {
+      enTrabajo.removeAttribute('aria-busy');
+      enTrabajo.replaceChildren(
+        document.createTextNode(
+          enTrabajo === botonConfirmar ? textoBotonGuardar() : 'Cancelar reserva',
+        ),
+      );
+    }
   }
 
   const textoBotonGuardar = () => (enEdicion ? 'Guardar cambios' : 'Registrar reserva');
@@ -235,6 +277,11 @@ export function crearModalReserva({ dialogo, alCrear, alEditar, alCancelar }) {
     bloqueHistorial.hidden = false;
   }
 
+  /** Deja marcado el valor dado, o ninguno si no viene. */
+  function marcar(nombre, valor) {
+    radios(nombre).forEach((r) => { r.checked = r.value === valor; });
+  }
+
   /* ── Apertura ───────────────────────────────────────────────────────── */
 
   /** Rellena el desplegable del menú y deja elegido el plato de la reserva. */
@@ -267,6 +314,7 @@ export function crearModalReserva({ dialogo, alCrear, alEditar, alCancelar }) {
       ? 'Se puede cambiar el nombre, el móvil y el plato. Cada cambio queda en el historial.'
       : 'Solo se registran reservas para el día de hoy.';
     botonConfirmar.textContent = textoBotonGuardar();
+    botonCancelarReserva.textContent = 'Cancelar reserva';
 
     // El identificador entero —cafetería, fecha y consecutivo— y no solo el
     // número corto de la tabla: aquí es donde se comprueba que se está
@@ -278,11 +326,17 @@ export function crearModalReserva({ dialogo, alCrear, alEditar, alCancelar }) {
       identificador.hidden = true;
     }
 
-    // Cancelar la reserva solo tiene sentido sobre una que ya existe.
-    botonCancelarReserva.hidden = !reserva;
+    // Cancelar la reserva solo tiene sentido sobre una que ya existe, y solo
+    // donde esté permitido: sin `alCancelar` el botón no aparece. Así el
+    // mostrador no lo ofrece por el hecho de usar el mismo formulario.
+    botonCancelarReserva.hidden = !reserva || !alCancelar;
 
     campoNombre.value = reserva ? reserva.nombre : '';
     campoTelefono.value = reserva ? formatearTelefono(reserva.telefono) : '';
+    // Una reserva vieja puede no traer estos campos: entonces se queda sin
+    // marcar y hay que elegir, que es lo correcto.
+    marcar('medio', reserva?.medio);
+    marcar('pago', reserva?.pago);
     pintarMenu(menu, reserva ? reserva.menuId : '');
     pintarHistorial(reserva);
 

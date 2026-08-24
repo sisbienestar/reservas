@@ -107,6 +107,27 @@
   font-size: var(--texto-xs);
 }
 
+/* Girador dentro del botón, mientras la petición está en marcha. Hereda el
+   color del botón —`currentColor`— para que valga igual en el verde, en el
+   blanco y en el rojo sin una regla por variante. Se dimensiona en `em` para
+   que en un botón pequeño salga pequeño. */
+.boton__girador {
+  width: 0.85em;
+  height: 0.85em;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  flex-shrink: 0;
+  animation: girar 700ms linear infinite;
+}
+
+/* Un botón ocupado se ve apagado, pero no tanto como uno inservible: sigue
+   pasando algo. Gana a `.boton:disabled` por especificidad. */
+.boton[aria-busy='true']:disabled {
+  opacity: 0.75;
+  cursor: progress;
+}
+
 /* ── Tarjeta de cafetería ────────────────────────────────────────────── */
 
 .rejilla-tarjetas {
@@ -631,3 +652,97 @@ select.campo__control {
 
 th.tabla__numero-reserva,
 td.tabla__numero-reserva { padding-right: var(--e-3); }
+
+/* ── Grupos de opción (radios) ───────────────────────────────────────── */
+
+/* El <fieldset> trae borde y márgenes propios del navegador que no encajan
+   con el resto de campos: se anulan y se deja como un campo más. */
+.campo--opciones {
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.campo--opciones .campo__etiqueta {
+  padding: 0;
+  margin-bottom: var(--e-2);
+}
+
+.opciones {
+  display: flex;
+  gap: var(--e-3);
+}
+
+/* Toda la pastilla es el área de clic, no solo el circulito: en un mostrador
+   con prisa, acertar a un radio de 14 px cuesta más de lo que parece. */
+.opcion {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--e-2);
+  min-height: 46px;
+  padding: var(--e-3) var(--e-4);
+  background: var(--c-superficie-2);
+  border: 1px solid transparent;
+  border-radius: var(--radio-md);
+  font-size: var(--texto-sm);
+  cursor: pointer;
+  transition: background var(--transicion), border-color var(--transicion);
+}
+
+.opcion:hover { border-color: var(--c-borde-fuerte); }
+
+.opcion__radio {
+  accent-color: var(--c-acento);
+  width: 1.1em;
+  height: 1.1em;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+/* La opción marcada se distingue por fondo y peso, no solo por el punto del
+   radio: de un vistazo se ve qué está elegido sin buscar el circulito. */
+.opcion:has(.opcion__radio:checked) {
+  background: var(--c-acento-suave);
+  border-color: var(--c-acento);
+  font-weight: var(--peso-medio);
+}
+
+.opcion:has(.opcion__radio:focus-visible) {
+  outline: 2px solid var(--c-acento);
+  outline-offset: 2px;
+}
+
+.opcion:has(.opcion__radio:disabled) {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.opcion__radio[aria-invalid='true'] { accent-color: var(--c-error); }
+
+/* ── Marca de pago ───────────────────────────────────────────────────── */
+
+/* «Debe» tiene que saltar a la vista en la tabla del día: es lo que hay que
+   cobrar cuando la persona llegue. «Pagado» se queda discreto — lo normal no
+   necesita llamar la atención. */
+.marca-pago {
+  display: inline-block;
+  padding: 2px var(--e-3);
+  border-radius: var(--radio-pildora);
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-medio);
+  white-space: nowrap;
+}
+
+.marca-pago--pagado {
+  background: var(--c-superficie-2);
+  color: var(--c-texto-3);
+}
+
+.marca-pago--debe {
+  background: var(--c-aviso-suave);
+  color: var(--c-aviso);
+}
+
+.tabla__vacio { color: var(--c-texto-3); }

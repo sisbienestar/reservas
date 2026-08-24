@@ -13,7 +13,7 @@ import { numeroDeReserva } from '../utils/idReserva.js';
 
 /**
  * @typedef {Object} CambioReserva
- * @property {'nombre'|'telefono'|'menu'} campo
+ * @property {'nombre'|'telefono'|'menu'|'medio'|'pago'} campo
  * @property {string} antes
  * @property {string} despues
  */
@@ -35,6 +35,8 @@ import { numeroDeReserva } from '../utils/idReserva.js';
  * @property {string} fecha
  * @property {string} menuId
  * @property {string} menuNombre
+ * @property {'presencial'|'telefono'} medio   cómo se hizo la reserva
+ * @property {'pagado'|'debe'} pago
  * @property {'activa'|'cancelada'} estado
  * @property {string} timestamp
  * @property {AsientoHistorial[]} historial  del más antiguo al más reciente
@@ -53,6 +55,10 @@ function normalizar(fila) {
     fecha: fila.fecha,
     menuId: fila.menu_id,
     menuNombre: fila.menu_nombre,
+    // Una reserva anterior a estos campos llega sin ellos: se deja vacío y
+    // la interfaz lo muestra como «—» en vez de inventarse un valor.
+    medio: fila.medio ?? '',
+    pago: fila.pago ?? '',
     // Una fila de la hoja sin la columna todavía se da por activa.
     estado: fila.estado ?? 'activa',
     timestamp: fila.timestamp,
@@ -71,7 +77,8 @@ export async function getReservasDelDia(cafeteriaId, fecha = hoyISO()) {
  * Crea una reserva. Lanza ErrorServicio con códigos de negocio conocidos:
  * RESERVA_DUPLICADA · MENU_INVALIDO · DATOS_INCOMPLETOS.
  *
- * @param {{nombre: string, telefono: string, cafeteriaId: string, menuId: string, fecha?: string}} datos
+ * @param {{nombre: string, telefono: string, cafeteriaId: string, menuId: string,
+ *          medio: string, pago: string, fecha?: string}} datos
  * @returns {Promise<Reserva>}
  */
 export async function crearReserva(datos) {
@@ -81,6 +88,8 @@ export async function crearReserva(datos) {
     cafeteria_id: datos.cafeteriaId,
     fecha: datos.fecha ?? hoyISO(),
     menu_id: datos.menuId,
+    medio: datos.medio,
+    pago: datos.pago,
   });
   return normalizar(fila);
 }
@@ -96,7 +105,7 @@ export async function crearReserva(datos) {
  * MENU_INVALIDO · SIN_CAMBIOS.
  *
  * @param {string} id
- * @param {{nombre: string, telefono: string, menuId: string}} datos
+ * @param {{nombre: string, telefono: string, menuId: string, medio: string, pago: string}} datos
  * @returns {Promise<Reserva>}
  */
 export async function actualizarReserva(id, datos) {
@@ -105,6 +114,8 @@ export async function actualizarReserva(id, datos) {
     nombre: datos.nombre,
     telefono: datos.telefono,
     menu_id: datos.menuId,
+    medio: datos.medio,
+    pago: datos.pago,
   });
   return normalizar(fila);
 }

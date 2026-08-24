@@ -6,16 +6,12 @@
  */
 
 import { crear, pintar, bloqueEstado } from './dom.js';
+import { botonConCarga } from './boton.js';
 import { formatearFechaCorta, nombreDiaCorto, hoyISO, esDiaDeServicio } from '../utils/fechas.js';
 
+/** Con girador: cerrar o reabrir una sede escribe en la hoja y recarga. */
 function boton(texto, clase, alPulsar, etiqueta) {
-  const b = crear('button', {
-    clase: `boton ${clase} boton--sm`,
-    texto,
-    attrs: { type: 'button', 'aria-label': etiqueta ?? texto },
-  });
-  b.addEventListener('click', alPulsar);
-  return b;
+  return botonConCarga({ texto, clase, etiqueta, alPulsar });
 }
 
 /* ── Cafeterías ───────────────────────────────────────────────────────── */

@@ -31,6 +31,7 @@ import { crearModalReserva } from './ui/modalReserva.js';
 import { montarModalReserva } from './ui/marcadoModalReserva.js';
 import { montarConfirmacion } from './ui/modalConfirmacion.js';
 import { pedirAcceso, cerrarSesion } from './ui/accesoAdmin.js';
+import { conCarga } from './ui/boton.js';
 import * as tablaAdmin from './ui/adminReservas.js';
 import { mostrarConsolidado } from './ui/adminConsolidado.js';
 import { mostrarCafeterias, montarSemana } from './ui/adminCatalogo.js';
@@ -101,6 +102,14 @@ const modal = crearModalReserva({
 });
 
 const { confirmar } = montarConfirmacion();
+
+/** Etiqueta visible de los campos de opción, para el CSV. */
+const ETIQUETAS = {
+  presencial: 'Presencial',
+  telefono: 'Teléfono',
+  pagado: 'Pagado',
+  debe: 'Debe',
+};
 
 const nombreCafeteria = (id) =>
   estado.cafeterias.find((c) => c.id === id)?.nombre ?? id;
@@ -254,13 +263,33 @@ function pintarResultado() {
 
 /* ── Editar y cancelar reservas ───────────────────────────────────────── */
 
+/**
+ * Cartas ya consultadas, por sede y fecha.
+ *
+ * Revisar un día es abrir una reserva detrás de otra, todas de la misma fecha
+ * y casi siempre de la misma sede. Sin esto, cada una pagaba su viaje entero
+ * para traer exactamente la misma carta que la anterior.
+ *
+ * Se vacía al publicar una carta nueva, que es lo único que puede cambiarla
+ * desde aquí.
+ */
+const cartasVistas = new Map();
+
+async function cartaDeLaReserva(reserva) {
+  const clave = `${reserva.cafeteriaId}|${reserva.fecha}`;
+  if (!cartasVistas.has(clave)) {
+    cartasVistas.set(clave, await getMenuDelDia(reserva.cafeteriaId, reserva.fecha));
+  }
+  return cartasVistas.get(clave);
+}
+
 async function abrirEdicion(reserva) {
   ocultarAviso(vista.aviso);
   try {
     // La carta se pide para la fecha DE LA RESERVA, no para hoy: se está
     // corrigiendo una reserva que puede ser de hace tres semanas, y la carta
     // que la valida es la de aquel día.
-    const menu = await getMenuDelDia(reserva.cafeteriaId, reserva.fecha);
+    const menu = await cartaDeLaReserva(reserva);
     if (menu.length === 0) {
       mostrarAviso(
         vista.aviso,
@@ -332,13 +361,19 @@ async function exportar() {
     const todo = await buscarReservas({ ...filtros, limite: 0 });
 
     const csv = aCSV(
-      ['Fecha', 'Cafetería', 'Nombre', 'Móvil', 'Menú del día', 'Estado', 'Registrada'],
+      ['N.º de reserva', 'Fecha', 'Cafetería', 'Nombre', 'Móvil', 'Menú del día',
+       'Medio', 'Pago', 'Estado', 'Registrada'],
       todo.reservas.map((r) => [
+        r.id,
         r.fecha,
         nombreCafeteria(r.cafeteriaId),
         r.nombre,
         formatearTelefono(r.telefono),
         r.menuNombre,
+        // Etiqueta legible y no el valor interno: el CSV lo abre una persona
+        // en Excel, no un programa.
+        ETIQUETAS[r.medio] ?? '—',
+        ETIQUETAS[r.pago] ?? '—',
         r.estado === 'activa' ? 'Activa' : 'Cancelada',
         new Date(r.timestamp).toLocaleString('es-CO'),
       ]),
@@ -517,6 +552,9 @@ async function guardarSemana() {
     const dias = estado.semana.leer();
     await guardarMenuSemana(estado.lunesCarta, dias);
     estado.semana.marcarGuardado();
+    // Publicar una carta invalida las que se hubieran consultado al editar
+    // reservas: seguir usándolas ofrecería platos que ya no existen.
+    cartasVistas.clear();
 
     const conServicio = dias.filter((d) => d.platos.length > 0).length;
     mostrarAviso(
@@ -556,7 +594,6 @@ async function copiarSemanaAnterior() {
     if (!seguir) return;
   }
 
-  vista.botonCopiarSemana.disabled = true;
   try {
     const anterior = await getMenuSemana(sumarDias(estado.lunesCarta, -7));
     estado.semana.volcar(anterior);
@@ -567,8 +604,6 @@ async function copiarSemanaAnterior() {
     );
   } catch (error) {
     mostrarAviso(vista.avisoCarta, 'error', error.message);
-  } finally {
-    vista.botonCopiarSemana.disabled = false;
   }
 }
 
@@ -577,7 +612,7 @@ async function copiarSemanaAnterior() {
 function conectarEventos() {
   vista.filtros.addEventListener('submit', (evento) => {
     evento.preventDefault();
-    buscar();
+    conCarga(qs('#filtros [type="submit"]'), buscar, 'Buscando…');
   });
 
   vista.periodo.addEventListener('change', () => {
@@ -592,12 +627,13 @@ function conectarEventos() {
     campo.addEventListener('change', () => { vista.periodo.value = 'personalizado'; }),
   );
 
-  qs('#boton-limpiar').addEventListener('click', () => {
+  const botonLimpiar = qs('#boton-limpiar');
+  botonLimpiar.addEventListener('click', () => conCarga(botonLimpiar, () => {
     vista.filtros.reset();
     vista.periodo.value = '30';
     aplicarPeriodo();
-    buscar();
-  });
+    return buscar();
+  }, 'Limpiando…'));
 
   qs('#boton-exportar').addEventListener('click', exportar);
 
@@ -608,7 +644,8 @@ function conectarEventos() {
   qs('#semana-siguiente').addEventListener('click', () => moverSemana(7));
   qs('#semana-actual').addEventListener('click', () => moverSemana(0));
   vista.botonGuardarSemana.addEventListener('click', guardarSemana);
-  vista.botonCopiarSemana.addEventListener('click', copiarSemanaAnterior);
+  vista.botonCopiarSemana.addEventListener('click', () =>
+    conCarga(vista.botonCopiarSemana, copiarSemanaAnterior, 'Copiando…'));
 
   // Red de seguridad del navegador para el cierre de pestaña o la recarga.
   window.addEventListener('beforeunload', (evento) => {
@@ -635,13 +672,14 @@ async function iniciar() {
   conectarEventos();
   aplicarPeriodo();
 
-  try {
-    await cargarCafeterias();
-  } catch (error) {
-    mostrarAviso(vista.aviso, 'error', `No se pudieron cargar las cafeterías: ${error.message}`);
+  // Las dos a la vez. La búsqueda no necesita el listado de cafeterías: sin
+  // él, el filtro de sede se queda en «todas», que es justo su valor de
+  // partida. Encadenarlas costaba un viaje entero de más en cada entrada.
+  const [listado] = await Promise.allSettled([cargarCafeterias(), buscar()]);
+  if (listado.status === 'rejected') {
+    mostrarAviso(vista.aviso, 'error',
+      `No se pudieron cargar las cafeterías: ${listado.reason.message}`);
   }
-
-  await buscar();
 }
 
 iniciar();

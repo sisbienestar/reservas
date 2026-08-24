@@ -53,7 +53,7 @@ const HOJAS = {
     nombre: 'Reservas',
     cabeceras: [
       'id', 'nombre', 'telefono', 'cafeteria_id', 'fecha',
-      'menu_id', 'menu_nombre', 'estado', 'timestamp', 'historial',
+      'menu_id', 'menu_nombre', 'medio', 'pago', 'estado', 'timestamp', 'historial',
     ],
   },
 };
@@ -77,7 +77,63 @@ const DIAS_SIN_SERVICIO = [5, 6];
  * Las dos tienen que estar en el mismo estado: el frontend avisa y el
  * backend decide.
  */
-const PERMITIR_FIN_DE_SEMANA = true;
+const PERMITIR_FIN_DE_SEMANA = false;
+
+/* ── Candado y caché ─────────────────────────────────────────────────────
+ *
+ * Cada lectura de una pestaña cuesta entre 400 y 900 ms contra Google, y cada
+ * petición paga además un peaje fijo de un segundo largo antes de tocar una
+ * sola celda. Con ese reparto, el tiempo de respuesta ES el número de
+ * lecturas: lo que hay aquí sirve para bajarlo.
+ */
+
+/**
+ * Qué tabla modifica cada acción. Una acción que no esté en esta lista es de
+ * solo lectura. Se usa para dos cosas:
+ *
+ *  · Tomar el candado SOLO al escribir. Antes se tomaba siempre, y con dos
+ *    cafeterías atendiendo a la vez las consultas se ponían en cola unas
+ *    detrás de otras sin ninguna razón: dos lecturas no pueden pisarse.
+ *  · Saber qué tabla NO puede venir de la caché compartida. Los objetos que
+ *    devuelve `leerTabla` llevan `_fila`, el número de fila real, y escribir
+ *    con un `_fila` de hace dos minutos es escribir en la fila equivocada.
+ *    Para consultar, un dato de hace un minuto vale; para escribir, nunca.
+ *
+ * Al añadir una acción que escriba hay que apuntarla aquí, o se quedará sin
+ * candado y podrá pisar a otra.
+ */
+var ACCIONES_QUE_ESCRIBEN = {
+  'cafeterias.crear': 'cafeterias',
+  'cafeterias.actualizar': 'cafeterias',
+  'cafeterias.archivar': 'cafeterias',
+  'cafeterias.reactivar': 'cafeterias',
+  'menu.guardarSemana': 'menu',
+  'reservas.crear': 'reservas',
+  'reservas.actualizar': 'reservas',
+  'reservas.cancelar': 'reservas',
+};
+
+/**
+ * Tablas que se conservan de una petición a otra. 'reservas' NO está y no
+ * debe estar: cambia con cada registro del mostrador, y servirla vieja es
+ * enseñar una tabla que no coincide con la realidad. Las otras dos cambian
+ * como mucho una vez por semana.
+ */
+var TABLAS_EN_CACHE = { cafeterias: true, menu: true };
+
+/**
+ * Vida de la copia compartida. Corta a propósito: la hoja se edita a veces a
+ * mano, y una edición manual no puede avisar a nadie de que invalide nada.
+ * Dos minutos es, entonces, lo máximo que puede tardar en verse un cambio
+ * hecho por fuera de la aplicación.
+ */
+var VIDA_CACHE_S = 120;
+
+/** Copia válida para UNA petición. Evita releer la misma pestaña dos veces. */
+var _tablas = {};
+
+/** La tabla que la acción en curso va a escribir; '*' en mantenimiento. */
+var _tablaEscrita = null;
 
 /** Tope por defecto del detalle en `reservas.buscar`. */
 const LIMITE_DETALLE = 500;
@@ -95,29 +151,43 @@ const MAX_DIAS_RANGO = 366;
  * no es un caso teórico.
  */
 function doPost(e) {
-  const bloqueo = LockService.getScriptLock();
+  let cuerpo;
   try {
-    bloqueo.waitLock(20000);
+    cuerpo = JSON.parse(e.postData.contents);
   } catch (error) {
-    return responder(fallo('SERVIDOR_OCUPADO', 'El servidor está ocupado. Inténtalo otra vez.'));
+    return responder(fallo('PETICION_INVALIDA', 'El cuerpo de la petición no es JSON válido.'));
+  }
+
+  const accion = cuerpo.accion;
+  const manejador = ACCIONES[accion];
+  if (!manejador) {
+    return responder(fallo('ACCION_DESCONOCIDA', 'La API no reconoce la acción «' + accion + '».'));
+  }
+
+  // Apps Script reutiliza la instancia entre peticiones: si no se vacía aquí,
+  // la segunda respondería con los datos que leyó la primera.
+  _tablas = {};
+  _tablaEscrita = ACCIONES_QUE_ESCRIBEN[accion] || null;
+
+  const bloqueo = _tablaEscrita ? LockService.getScriptLock() : null;
+  if (bloqueo) {
+    try {
+      bloqueo.waitLock(20000);
+    } catch (error) {
+      return responder(fallo('SERVIDOR_OCUPADO', 'El servidor está ocupado. Inténtalo otra vez.'));
+    }
   }
 
   try {
-    const cuerpo = JSON.parse(e.postData.contents);
-    const accion = cuerpo.accion;
-    const params = cuerpo.params || {};
-
-    const manejador = ACCIONES[accion];
-    if (!manejador) {
-      return responder(fallo('ACCION_DESCONOCIDA', 'La API no reconoce la acción «' + accion + '».'));
-    }
-    return responder(manejador(params));
+    return responder(manejador(cuerpo.params || {}));
   } catch (error) {
     // Un fallo inesperado no puede salir como HTML de error de Apps Script:
     // el cliente espera el sobre y lo interpretaría como respuesta inválida.
     return responder(fallo('ERROR_INTERNO', String(error && error.message ? error.message : error)));
   } finally {
-    bloqueo.releaseLock();
+    _tablas = {};
+    _tablaEscrita = null;
+    if (bloqueo) bloqueo.releaseLock();
   }
 }
 
@@ -146,12 +216,87 @@ function hoja(clave) {
 }
 
 /**
- * Lee una pestaña entera como objetos.
+ * Una pestaña entera como objetos, con dos niveles de caché delante.
+ *
+ * El primero dura una petición y no tiene ningún riesgo: sirve para no leer
+ * dos veces la misma pestaña dentro de la misma acción, que es justo lo que
+ * hacía `reservas.crear` con 'cafeterias'.
+ *
+ * El segundo dura `VIDA_CACHE_S` y se comparte entre peticiones, pero solo
+ * para las tablas de `TABLAS_EN_CACHE` y nunca para la que se va a escribir.
+ * Ese «nunca» es lo que hace que la optimización sea segura: un `_fila`
+ * caducado escribiría en la fila de al lado.
+ */
+function leerTabla(clave) {
+  if (_tablas[clave]) return _tablas[clave];
+
+  const compartible = TABLAS_EN_CACHE[clave] === true &&
+                      _tablaEscrita !== clave &&
+                      _tablaEscrita !== '*';
+
+  let filas = compartible ? deCacheCompartida(clave) : null;
+  if (!filas) {
+    filas = leerHojaEntera(clave);
+    if (compartible) aCacheCompartida(clave, filas);
+  }
+
+  _tablas[clave] = filas;
+  return filas;
+}
+
+/** La clave que ocupa cada tabla dentro de la caché de Apps Script. */
+function claveCache(clave) {
+  return 'tabla:' + clave;
+}
+
+/** Una caché que falla es una caché vacía: nunca un error para el usuario. */
+function deCacheCompartida(clave) {
+  try {
+    const texto = CacheService.getScriptCache().get(claveCache(clave));
+    return texto ? JSON.parse(texto) : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function aCacheCompartida(clave, filas) {
+  try {
+    CacheService.getScriptCache().put(claveCache(clave), JSON.stringify(filas), VIDA_CACHE_S);
+  } catch (error) {
+    // CacheService admite 100 KB por clave. Si no cabe, se sigue sin caché.
+  }
+}
+
+/** Tira la copia compartida de una tabla. Se llama tras cada escritura. */
+function olvidarCache(clave) {
+  _tablas[clave] = null;
+  try {
+    CacheService.getScriptCache().remove(claveCache(clave));
+  } catch (error) {
+    // Ídem: no poder olvidar solo significa esperar a que caduque.
+  }
+}
+
+/**
+ * Prepara una función de mantenimiento ejecutada desde el editor.
+ *
+ * Estas funciones escriben en varias pestañas y hasta añaden columnas, así
+ * que ninguna copia previa sirve: con '*' se apaga la caché compartida
+ * durante toda la ejecución.
+ */
+function empezarMantenimiento() {
+  _tablas = {};
+  _tablaEscrita = '*';
+  Object.keys(TABLAS_EN_CACHE).forEach(olvidarCache);
+}
+
+/**
+ * La lectura de verdad: baja a la hoja y no mira ninguna caché.
  *
  * Cada objeto lleva `_fila`, el número de fila real en la hoja, que es lo que
  * permite volver a escribir justo ahí sin buscar otra vez.
  */
-function leerTabla(clave) {
+function leerHojaEntera(clave) {
   const h = hoja(clave);
   const valores = h.getDataRange().getValues();
   if (valores.length < 2) return [];
@@ -217,9 +362,26 @@ function normalizarCelda(cabecera, valor) {
   return valor === null || valor === undefined ? '' : valor;
 }
 
-/** Prepara un objeto para escribirlo: serializa el JSON y ordena por cabecera. */
-function aFila(clave, objeto) {
-  return HOJAS[clave].cabeceras.map(function (cabecera) {
+/**
+ * Las cabeceras REALES de la hoja, en el orden en que están.
+ *
+ * No se usa `HOJAS[clave].cabeceras` para escribir, y esto importa: esa
+ * constante es el orden con el que se CREA una hoja nueva, pero una hoja que
+ * ya existía y recibió columnas nuevas las tiene al final. Si se escribe con
+ * el orden declarado sobre una hoja con otro orden, cada valor cae en la
+ * columna equivocada — y como leer sí va por nombre, el destrozo no se nota
+ * hasta que alguien mira una fila.
+ *
+ * Leer y escribir tienen que usar la misma fuente de verdad, y la fuente de
+ * verdad es la hoja.
+ */
+function cabecerasDe(h) {
+  return h.getRange(1, 1, 1, h.getLastColumn()).getValues()[0].map(String);
+}
+
+/** Prepara un objeto para escribirlo, en el orden de columnas de la hoja. */
+function aFila(cabeceras, objeto) {
+  return cabeceras.map(function (cabecera) {
     const valor = objeto[cabecera];
     if (COLUMNAS_JSON.indexOf(cabecera) !== -1) return JSON.stringify(valor || []);
     return valor === undefined || valor === null ? '' : valor;
@@ -227,14 +389,18 @@ function aFila(clave, objeto) {
 }
 
 function agregar(clave, objeto) {
-  hoja(clave).appendRow(aFila(clave, objeto));
+  const h = hoja(clave);
+  h.appendRow(aFila(cabecerasDe(h), objeto));
+  olvidarCache(clave);
   return objeto;
 }
 
 function guardar(clave, objeto) {
   const h = hoja(clave);
-  h.getRange(objeto._fila, 1, 1, HOJAS[clave].cabeceras.length)
-    .setValues([aFila(clave, objeto)]);
+  const cabeceras = cabecerasDe(h);
+  h.getRange(objeto._fila, 1, 1, cabeceras.length)
+    .setValues([aFila(cabeceras, objeto)]);
+  olvidarCache(clave);
   return objeto;
 }
 
@@ -420,6 +586,42 @@ function buscarPlato(cafeteriaId, fecha, menuId) {
   const opciones = ofertaDelDia(cafeteriaId, fecha);
   for (let i = 0; i < opciones.length; i++) {
     if (opciones[i].id === menuId) return opciones[i];
+  }
+  return null;
+}
+
+/** Valores admitidos en los campos de opción, y su etiqueta visible. */
+var VALORES_MEDIO = ['presencial', 'telefono'];
+var VALORES_PAGO = ['pagado', 'debe'];
+var ETIQUETAS = {
+  presencial: 'Presencial',
+  telefono: 'Teléfono',
+  pagado: 'Pagado',
+  debe: 'Debe',
+};
+
+/**
+ * Comprueba los campos de opción; devuelve el sobre de error o null.
+ *
+ * Se valida en el servidor y no solo en el formulario porque son datos con
+ * consecuencias: «pagado» o «debe» es dinero, y un valor inventado por una
+ * petición hecha a mano dejaría la contabilidad con un estado que ninguna
+ * pantalla sabe pintar.
+ */
+function errorDeOpciones(medio, pago) {
+  const revisar = [['medio', medio, VALORES_MEDIO], ['pago', pago, VALORES_PAGO]];
+  for (let i = 0; i < revisar.length; i++) {
+    const campo = revisar[i][0];
+    const valor = revisar[i][1];
+    const admitidos = revisar[i][2];
+    if (!valor) {
+      return fallo('DATOS_INCOMPLETOS', 'Falta indicar «' + campo + '» en la reserva.');
+    }
+    if (admitidos.indexOf(valor) === -1) {
+      return fallo('DATOS_INCOMPLETOS',
+        '«' + valor + '» no es un valor válido para «' + campo + '»: se espera ' +
+        admitidos.join(' o ') + '.');
+    }
   }
   return null;
 }
@@ -750,6 +952,8 @@ const ACCIONES = {
     if (!params.nombre || !params.telefono || !params.menu_id) {
       return fallo('DATOS_INCOMPLETOS', 'Faltan datos obligatorios en la reserva.');
     }
+    const malOpciones = errorDeOpciones(params.medio, params.pago);
+    if (malOpciones) return malOpciones;
     if (!esDiaDeServicio(params.fecha)) {
       return fallo('SIN_SERVICIO', 'Los sábados y domingos no hay servicio de almuerzo.');
     }
@@ -775,6 +979,8 @@ const ACCIONES = {
       fecha: params.fecha,
       menu_id: plato.id,
       menu_nombre: plato.nombre,
+      medio: params.medio,
+      pago: params.pago,
       estado: 'activa',
       timestamp: ahora,
       historial: [{ tipo: 'creacion', timestamp: ahora, cambios: [] }],
@@ -796,6 +1002,9 @@ const ACCIONES = {
     if (!params.nombre || !params.telefono || !params.menu_id) {
       return fallo('DATOS_INCOMPLETOS', 'Faltan datos obligatorios en la reserva.');
     }
+
+    const malOpcionesEdicion = errorDeOpciones(params.medio, params.pago);
+    if (malOpcionesEdicion) return malOpcionesEdicion;
 
     const plato = buscarPlato(reserva.cafeteria_id, reserva.fecha, params.menu_id);
     if (!plato) return fallo('MENU_INVALIDO', 'Ese plato no está en la carta de ese día.');
@@ -819,6 +1028,17 @@ const ACCIONES = {
     if (plato.id !== reserva.menu_id) {
       cambios.push({ campo: 'menu', antes: reserva.menu_nombre, despues: plato.nombre });
     }
+    // El historial guarda la etiqueta que se ve en pantalla, no el valor
+    // interno: «Presencial → Teléfono» se entiende, «presencial → telefono»
+    // parece un error de escritura.
+    if (params.medio !== reserva.medio) {
+      cambios.push({ campo: 'medio',
+        antes: ETIQUETAS[reserva.medio] || '—', despues: ETIQUETAS[params.medio] });
+    }
+    if (params.pago !== reserva.pago) {
+      cambios.push({ campo: 'pago',
+        antes: ETIQUETAS[reserva.pago] || '—', despues: ETIQUETAS[params.pago] });
+    }
 
     // Guardar sin tocar nada dejaría un asiento vacío en el historial, que es
     // justo lo que un registro de cambios no debe tener.
@@ -830,6 +1050,8 @@ const ACCIONES = {
     reserva.telefono = String(params.telefono);
     reserva.menu_id = plato.id;
     reserva.menu_nombre = plato.nombre;
+    reserva.medio = params.medio;
+    reserva.pago = params.pago;
     reserva.historial = (reserva.historial || []).concat([{
       tipo: 'modificacion',
       timestamp: ahoraISO(),
@@ -937,6 +1159,7 @@ function cambiarActiva(id, activa) {
  * la respeta y no la pisa.
  */
 function configurarHojas() {
+  empezarMantenimiento();
   const libro = SpreadsheetApp.getActive();
 
   Object.keys(HOJAS).forEach(function (clave) {
@@ -955,8 +1178,11 @@ function configurarHojas() {
     // cualquier cero inicial: dos clases enteras de error que así no existen.
     // 'codigo' incluido: si la hoja lo lee como número, '01' se convierte en 1
     // y el identificador saldría «1-260823-001».
+    // Por las cabeceras REALES de la hoja y no por las declaradas: en una
+    // hoja que ya existía, las columnas añadidas después están en otro sitio
+    // y el formato acabaría puesto sobre la columna equivocada.
     const columnasTexto = ['fecha', 'telefono', 'timestamp', 'id', 'codigo'];
-    definicion.cabeceras.forEach(function (cabecera, i) {
+    cabecerasDe(h).forEach(function (cabecera, i) {
       if (columnasTexto.indexOf(cabecera) !== -1) {
         h.getRange(2, i + 1, h.getMaxRows() - 1, 1).setNumberFormat('@');
       }
@@ -995,6 +1221,7 @@ function sembrarCafeterias() {
  * Ejecutar y mirar el registro: si algo está mal montado, sale aquí.
  */
 function probarDesdeElEditor() {
+  empezarMantenimiento();
   const casos = [
     ['cafeterias.listar', {}],
     ['menu.delDia', { fecha: hoyDelServidor() }],
@@ -1024,6 +1251,7 @@ function probarDesdeElEditor() {
  * como estructuras ya deserializadas.
  */
 function exportarTodo() {
+  empezarMantenimiento();
   const volcado = {
     exportado: new Date().toISOString(),
     cafeterias: leerTabla('cafeterias').map(limpiar),
@@ -1062,6 +1290,7 @@ function exportarTodo() {
  * Es idempotente: las reservas que ya tengan el formato nuevo no se tocan.
  */
 function migrarAIdentificadorNuevo() {
+  empezarMantenimiento();
   const hojaCafeterias = hoja('cafeterias');
   const cabeceras = hojaCafeterias.getRange(1, 1, 1, hojaCafeterias.getLastColumn())
     .getValues()[0].map(String);
@@ -1099,6 +1328,17 @@ function migrarAIdentificadorNuevo() {
     codigoPorId[cafeterias[i].id] = cafeterias[i].codigo;
   }
 
+  // 1c. Las columnas 'medio' y 'pago' en Reservas, si faltan.
+  const hojaReservas = hoja('reservas');
+  ['medio', 'pago'].forEach(function (columna) {
+    const cabeceras = hojaReservas.getRange(1, 1, 1, hojaReservas.getLastColumn())
+      .getValues()[0].map(String);
+    if (cabeceras.indexOf(columna) === -1) {
+      hojaReservas.getRange(1, cabeceras.length + 1).setValue(columna).setFontWeight('bold');
+      Logger.log('Añadida la columna «' + columna + '» a Reservas.');
+    }
+  });
+
   // 2. Los identificadores de reserva.
   const reservas = leerTabla('reservas');
   // Por orden de llegada dentro de cada cafetería y día, para que el
@@ -1135,6 +1375,75 @@ function migrarAIdentificadorNuevo() {
 
   Logger.log('Identificadores migrados: ' + migradas + ' de ' + reservas.length + ' reservas.');
   SpreadsheetApp.getActive().toast('Migración terminada. Revisa el registro.');
+}
+
+/**
+ * Repara las filas que quedaron con los valores corridos de columna.
+ *
+ * Contexto: durante un tiempo el script escribía usando el orden de columnas
+ * DECLARADO en `HOJAS`, mientras que la hoja —tras añadirle `medio` y
+ * `pago` al final— tenía otro. Cada valor cayó una o dos casillas a la
+ * derecha. Leer va por nombre, así que el desajuste no se veía en pantalla:
+ * la reserva simplemente desaparecía de la tabla del día, porque su `estado`
+ * no decía «activa».
+ *
+ * Ejecutar UNA VEZ, después de desplegar la versión corregida. Es segura:
+ * solo toca las filas cuya firma es inequívoca —`estado` contiene un valor
+ * de `medio`, y `historial` contiene un estado— así que una fila sana no se
+ * reconoce y no se toca. Ejecutarla dos veces no hace nada la segunda.
+ */
+function repararFilasDescolocadas() {
+  empezarMantenimiento();
+  const h = hoja('reservas');
+  const cabeceras = cabecerasDe(h);
+  const col = {};
+  cabeceras.forEach(function (c, i) { col[c] = i; });
+
+  const necesarias = ['estado', 'timestamp', 'historial', 'medio', 'pago'];
+  for (let i = 0; i < necesarias.length; i++) {
+    if (col[necesarias[i]] === undefined) {
+      Logger.log('Falta la columna «' + necesarias[i] + '». Ejecuta antes migrarAIdentificadorNuevo().');
+      return;
+    }
+  }
+
+  const valores = h.getDataRange().getValues();
+  const MEDIOS = ['presencial', 'telefono'];
+  const ESTADOS = ['activa', 'cancelada'];
+  let reparadas = 0;
+
+  for (let f = 1; f < valores.length; f++) {
+    const fila = valores[f];
+    if (!fila[0]) continue;
+
+    // La firma del destrozo: donde debería ir el estado hay un medio, y donde
+    // debería ir el historial hay un estado.
+    const pareceRoto =
+      MEDIOS.indexOf(String(fila[col.estado])) !== -1 &&
+      ESTADOS.indexOf(String(fila[col.historial])) !== -1;
+    if (!pareceRoto) continue;
+
+    const medio = fila[col.estado];
+    const pago = fila[col.timestamp];
+    const estado = fila[col.historial];
+    const timestamp = fila[col.medio];
+    const historial = fila[col.pago];
+
+    fila[col.estado] = estado;
+    fila[col.timestamp] = timestamp;
+    fila[col.historial] = historial;
+    fila[col.medio] = medio;
+    fila[col.pago] = pago;
+
+    h.getRange(f + 1, 1, 1, cabeceras.length).setValues([fila]);
+    reparadas++;
+    Logger.log('Reparada la reserva ' + fila[0]);
+  }
+
+  Logger.log(reparadas === 0
+    ? 'No había filas descolocadas.'
+    : 'Filas reparadas: ' + reparadas);
+  SpreadsheetApp.getActive().toast('Reparación terminada. Revisa el registro.');
 }
 
 function hoyDelServidor() {

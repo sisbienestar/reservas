@@ -70,6 +70,44 @@ function limpiarPlatosFijos(lista) {
   return nombres;
 }
 
+/** Valores admitidos en los dos campos de opción de una reserva. */
+/** Etiqueta visible de cada valor, para el historial y los reportes. */
+const ETIQUETAS = {
+  presencial: 'Presencial',
+  telefono: 'Teléfono',
+  pagado: 'Pagado',
+  debe: 'Debe',
+};
+
+const VALORES = {
+  medio: ['presencial', 'telefono'],
+  pago: ['pagado', 'debe'],
+};
+
+/**
+ * Comprueba los campos de opción y devuelve el error si algo no cuadra.
+ *
+ * Se valida en el servidor y no solo en el formulario porque son datos con
+ * consecuencias: «pagado» o «debe» es dinero, y un valor inventado por una
+ * petición hecha a mano dejaría la contabilidad con un estado que ninguna
+ * pantalla sabe pintar.
+ */
+function errorDeOpciones({ medio, pago }) {
+  for (const [campo, admitidos] of Object.entries(VALORES)) {
+    const valor = campo === 'medio' ? medio : pago;
+    if (!valor) {
+      return fallo('DATOS_INCOMPLETOS', `Falta indicar «${campo}» en la reserva.`);
+    }
+    if (!admitidos.includes(valor)) {
+      return fallo(
+        'DATOS_INCOMPLETOS',
+        `«${valor}» no es un valor válido para «${campo}»: se espera ${admitidos.join(' o ')}.`,
+      );
+    }
+  }
+  return null;
+}
+
 /** Carta de un día. La misma para todas las sedes: la clave es la fecha. */
 function cartaDe(fecha) {
   return almacen.menuSemanal.find((m) => m.fecha === fecha) ?? null;
@@ -246,7 +284,7 @@ const ACCIONES = {
   },
 
   'reservas.crear': (datos) => {
-    const { nombre, telefono, cafeteria_id, fecha, menu_id } = datos;
+    const { nombre, telefono, cafeteria_id, fecha, menu_id, medio, pago } = datos;
 
     const cafeteria = almacen.cafeterias.find((c) => c.id === cafeteria_id);
     if (!cafeteria) {
@@ -255,6 +293,8 @@ const ACCIONES = {
     if (!nombre || !telefono || !menu_id) {
       return fallo('DATOS_INCOMPLETOS', 'Faltan datos obligatorios en la reserva.');
     }
+    const malOpciones = errorDeOpciones({ medio, pago });
+    if (malOpciones) return malOpciones;
     // Se comprueba aquí y no solo en la pantalla: el fin de semana tampoco
     // hay carta publicada, así que sin esta regla el rechazo llegaría como
     // MENU_INVALIDO —«ese plato no está en la carta»— que es verdad pero no
@@ -284,6 +324,8 @@ const ACCIONES = {
       fecha,
       menu_id: plato.id,
       menu_nombre: plato.nombre,
+      medio,
+      pago,
       estado: 'activa',
       timestamp: ahora,
       // Toda reserva nace con su historial abierto: la creación es el primer
@@ -296,7 +338,7 @@ const ACCIONES = {
   },
 
   'reservas.actualizar': (datos) => {
-    const { id, nombre, telefono, menu_id } = datos;
+    const { id, nombre, telefono, menu_id, medio, pago } = datos;
 
     const reserva = almacen.reservas.find((r) => r.id === id);
     if (!reserva) {
@@ -308,6 +350,8 @@ const ACCIONES = {
     if (!nombre || !telefono || !menu_id) {
       return fallo('DATOS_INCOMPLETOS', 'Faltan datos obligatorios en la reserva.');
     }
+    const malOpcionesEdicion = errorDeOpciones({ medio, pago });
+    if (malOpcionesEdicion) return malOpcionesEdicion;
 
     const plato = buscarPlato(reserva.cafeteria_id, reserva.fecha, menu_id);
     if (!plato) {
@@ -334,6 +378,15 @@ const ACCIONES = {
     if (plato.id !== reserva.menu_id) {
       cambios.push({ campo: 'menu', antes: reserva.menu_nombre, despues: plato.nombre });
     }
+    // El historial guarda la etiqueta que se ve en pantalla, no el valor
+    // interno: «Presencial → Teléfono» se entiende, «presencial → telefono»
+    // parece un error de escritura.
+    if (medio !== reserva.medio) {
+      cambios.push({ campo: 'medio', antes: ETIQUETAS[reserva.medio] ?? '—', despues: ETIQUETAS[medio] });
+    }
+    if (pago !== reserva.pago) {
+      cambios.push({ campo: 'pago', antes: ETIQUETAS[reserva.pago] ?? '—', despues: ETIQUETAS[pago] });
+    }
 
     // Guardar sin tocar nada dejaría un asiento vacío en el historial, que
     // es justo lo que un registro de cambios no debe tener.
@@ -345,6 +398,8 @@ const ACCIONES = {
     reserva.telefono = telefono;
     reserva.menu_id = plato.id;
     reserva.menu_nombre = plato.nombre;
+    reserva.medio = medio;
+    reserva.pago = pago;
     reserva.historial.push({
       tipo: 'modificacion',
       timestamp: new Date().toISOString(),

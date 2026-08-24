@@ -12,13 +12,11 @@ import {
   getReservasDelDia,
   crearReserva,
   actualizarReserva,
-  cancelarReserva,
 } from './services/reservasService.js';
 
 import { qs, pintar, bloqueEstado, prepararLogo } from './ui/dom.js';
 import { crearModalReserva } from './ui/modalReserva.js';
 import { montarModalReserva } from './ui/marcadoModalReserva.js';
-import { montarConfirmacion } from './ui/modalConfirmacion.js';
 import * as tabla from './ui/tablaReservas.js';
 
 import { PERMITIR_FIN_DE_SEMANA } from './config.js';
@@ -41,20 +39,50 @@ const vista = {
   dialogo: montarModalReserva(),
 };
 
-/** Estado de la página. Un objeto plano basta para dos vistas. */
+/**
+ * Estado de la página. Un objeto plano basta para dos vistas.
+ *
+ * `menu` y `reservas` no están aquí por comodidad: son lo que permite que
+ * abrir el formulario y ver una reserva registrada no cuesten un viaje al
+ * servidor. Cada viaje a Apps Script son más de mil milisegundos incluso
+ * cuando no lee nada, y en un mostrador eso es la diferencia entre responder
+ * y hacer esperar.
+ */
 const estado = {
   cafeteria: null,
   ultimaReservaId: null,
+  /** La carta de hoy en esta sede, ya con sus platos fijos. */
+  menu: [],
+  /** Las reservas activas de hoy, tal como las devolvió el servidor. */
+  reservas: [],
+  /**
+   * Cuántas veces ha escrito esta pantalla desde que cargó.
+   *
+   * Sirve para resolver una carrera concreta: se registra una reserva, sale
+   * el refresco de fondo, y antes de que vuelva se registra otra. Ese
+   * refresco pidió la tabla cuando la segunda todavía no existía, así que al
+   * llegar la borraría de la pantalla. Comparando el sello de antes y el de
+   * después se sabe que llega tarde y se descarta.
+   */
+  escrituras: 0,
 };
 
+/** Anota una escritura local y repinta. Todo cambio propio pasa por aquí. */
+function aplicarCambioLocal(reservas) {
+  estado.reservas = reservas;
+  estado.escrituras++;
+  pintarTabla();
+}
+
+// Sin `alCancelar`: desde el mostrador NO se cancela. Aquí se corrige lo que
+// se escuchó mal, pero anular una reserva es una decisión administrativa y
+// vive en admin.html, detrás de su clave. Al no pasar el callback, el modal
+// esconde el botón; la regla no depende de que la pantalla se acuerde.
 const modal = crearModalReserva({
   dialogo: vista.dialogo,
   alCrear: confirmarReserva,
   alEditar: guardarCambios,
-  alCancelar: pedirCancelacion,
 });
-
-const { confirmar } = montarConfirmacion();
 
 /* ── Arranque ─────────────────────────────────────────────────────────── */
 
@@ -70,12 +98,23 @@ async function iniciar() {
     return;
   }
 
-  try {
-    estado.cafeteria = await getCafeteria(cafeteriaId);
-  } catch (error) {
-    mostrarFalloDePagina('No se encontró esa cafetería', error.message);
+  // Las tres consultas salen a la vez. Antes iban en fila —la cafetería,
+  // luego la tabla, y la carta solo al pulsar «Registrar reserva»— y como
+  // cada una cuesta un viaje entero, la página tardaba lo que suman las
+  // tres. Ninguna depende del resultado de las otras, así que no hay razón
+  // para encadenarlas.
+  const diaHabil = esDiaDeServicio(hoyISO());
+  const [resCafeteria, resReservas, resMenu] = await Promise.allSettled([
+    getCafeteria(cafeteriaId),
+    diaHabil ? getReservasDelDia(cafeteriaId) : Promise.resolve([]),
+    diaHabil ? getMenuDelDia(cafeteriaId) : Promise.resolve([]),
+  ]);
+
+  if (resCafeteria.status === 'rejected') {
+    mostrarFalloDePagina('No se encontró esa cafetería', resCafeteria.reason.message);
     return;
   }
+  estado.cafeteria = resCafeteria.value;
 
   document.title = `${estado.cafeteria.nombre} · Reservas UIS`;
   vista.nombre.textContent = estado.cafeteria.nombre;
@@ -106,23 +145,65 @@ async function iniciar() {
   }
 
   vista.botonReservar.disabled = false;
+  // Sin girador: abrir el formulario ya no consulta nada, así que anunciar
+  // que el sistema está trabajando sería mentir sobre una espera que no
+  // existe. El girador sigue donde hace falta, al guardar.
   vista.botonReservar.addEventListener('click', () => abrirFormulario(null));
 
-  await refrescarTabla();
+  // Si alguna de las dos falló, se pide otra vez y esta sí enseña el error.
+  if (resReservas.status === 'fulfilled' && resMenu.status === 'fulfilled') {
+    estado.reservas = resReservas.value;
+    estado.menu = resMenu.value;
+    pintarTabla();
+  } else {
+    await refrescarTabla();
+  }
 }
 
 /* ── Tabla ────────────────────────────────────────────────────────────── */
 
-async function refrescarTabla() {
-  tabla.mostrarCargando(vista.tabla);
+/** Pinta la tabla con lo que ya hay en `estado`. No consulta nada. */
+function pintarTabla() {
+  tabla.mostrarReservas(vista.tabla, estado.reservas, {
+    idDestacado: estado.ultimaReservaId,
+    alEditar: (reserva) => abrirFormulario(reserva),
+  });
+}
+
+/**
+ * Vuelve a pedir al servidor la tabla y la carta, las dos a la vez.
+ *
+ * Van juntas porque tardan lo mismo en paralelo que una sola en serie, y así
+ * la carta que guarda `estado` nunca envejece más de un refresco: si el
+ * administrador publica un plato nuevo a media mañana, el mostrador lo tiene
+ * tras la siguiente reserva sin haber pagado un viaje extra por ello.
+ *
+ * @param {{enSegundoPlano?: boolean}} [opciones] en segundo plano no muestra
+ *        el «cargando» ni el error: la pantalla ya enseña algo correcto y
+ *        taparlo sería peor que no refrescar.
+ */
+async function refrescarTabla({ enSegundoPlano = false } = {}) {
+  if (!enSegundoPlano) tabla.mostrarCargando(vista.tabla);
+  const sello = estado.escrituras;
+
   try {
-    const reservas = await getReservasDelDia(estado.cafeteria.id);
-    tabla.mostrarReservas(vista.tabla, reservas, {
-      idDestacado: estado.ultimaReservaId,
-      alEditar: (reserva) => abrirFormulario(reserva),
-    });
+    const [reservas, menu] = await Promise.all([
+      getReservasDelDia(estado.cafeteria.id),
+      getMenuDelDia(estado.cafeteria.id),
+    ]);
+
+    // La carta se acepta siempre: no hay nada local con lo que pueda chocar.
+    estado.menu = menu;
+
+    // La tabla no, si mientras tanto se escribió: esta respuesta se pidió
+    // antes de ese cambio y no lo incluye. Se queda la versión local, que sí
+    // lo tiene, y el siguiente refresco pondrá todo de acuerdo.
+    if (enSegundoPlano && sello !== estado.escrituras) return;
+    estado.reservas = reservas;
+    pintarTabla();
   } catch (error) {
-    tabla.mostrarError(vista.tabla, error.message, refrescarTabla);
+    if (enSegundoPlano) return;
+    tabla.mostrarError(vista.tabla, error.message, () => refrescarTabla());
   }
 }
 
@@ -130,34 +211,31 @@ async function refrescarTabla() {
 
 /**
  * Abre el formulario. Con `reserva` en null crea una nueva; con una reserva
- * la edita. El menú se pide en ambos casos: es el que manda sobre lo que se
- * puede elegir hoy, también al corregir una reserva de esta mañana.
+ * la edita.
+ *
+ * Es síncrona a propósito: la carta ya está en `estado` desde que cargó la
+ * página y se renueva con cada refresco de la tabla. Antes se pedía aquí, y
+ * ese era el retraso que se notaba al pulsar el botón —más de un segundo
+ * mirando un girador para enseñar un formulario que ya se podía dibujar—.
+ *
+ * Que la carta pueda ser de hace unos minutos no abre ningún agujero: el
+ * servidor valida el plato al guardar y responde MENU_INVALIDO si ya no está.
+ * La pantalla puede ir un momento por detrás; los datos, nunca.
  *
  * @param {import('./services/reservasService.js').Reserva|null} reserva
  */
-async function abrirFormulario(reserva) {
+function abrirFormulario(reserva) {
   ocultarAviso();
-  vista.botonReservar.disabled = true;
 
-  try {
-    // Se pasa la cafetería: la carta del día es común a todo el campus, pero
-    // cada sede añade sus productos fijos —Mini Lunch, los especiales—.
-    const menu = await getMenuDelDia(estado.cafeteria.id);
-
-    if (menu.length === 0) {
-      mostrarAviso(
-        'aviso',
-        'Hoy no hay carta publicada, así que todavía no se pueden registrar reservas.',
-      );
-      return;
-    }
-
-    modal.abrir({ menu, reserva });
-  } catch (error) {
-    mostrarAviso('error', `No se pudo abrir el formulario: ${error.message}`);
-  } finally {
-    vista.botonReservar.disabled = false;
+  if (estado.menu.length === 0) {
+    mostrarAviso(
+      'aviso',
+      'Hoy no hay carta publicada, así que todavía no se pueden registrar reservas.',
+    );
+    return;
   }
+
+  modal.abrir({ menu: estado.menu, reserva });
 }
 
 /**
@@ -170,11 +248,18 @@ async function confirmarReserva(datos) {
     telefono: datos.telefono,
     cafeteriaId: estado.cafeteria.id,
     menuId: datos.menuId,
+    medio: datos.medio,
+    pago: datos.pago,
   });
 
   estado.ultimaReservaId = reserva.id;
+  // El servidor ya la confirmó y la devolvió entera, así que la tabla se
+  // pinta con lo que tenemos. Volver a pedirla solo para verla aparecer
+  // dejaría el modal abierto y el mostrador esperando otro viaje completo.
+  // La relectura va por detrás, para recoger lo que hayan hecho otros.
+  aplicarCambioLocal([...estado.reservas, reserva]);
   mostrarAviso('exito', `Reserva registrada · ${reserva.nombre} · ${reserva.menuNombre}.`);
-  await refrescarTabla();
+  refrescarTabla({ enSegundoPlano: true });
 }
 
 /** Igual que la anterior, pero para una reserva que ya existía. */
@@ -183,6 +268,8 @@ async function guardarCambios(id, datos) {
     nombre: datos.nombre,
     telefono: datos.telefono,
     menuId: datos.menuId,
+    medio: datos.medio,
+    pago: datos.pago,
   });
 
   estado.ultimaReservaId = reserva.id;
@@ -193,44 +280,11 @@ async function guardarCambios(id, datos) {
       `${cambios} ${cambios === 1 ? 'cambio registrado' : 'cambios registrados'}.`,
   );
 
-  // Se recarga desde el servicio en vez de tocar la fila a mano: así la tabla
-  // siempre refleja el servidor, no lo que el cliente cree que pasó.
-  await refrescarTabla();
-}
-
-/* ── Cancelación ──────────────────────────────────────────────────────── */
-
-/**
- * Se llama desde dentro del modal de edición, que es donde vive «Cancelar
- * reserva». Pide confirmación aparte porque es la única acción de la página
- * que destruye algo.
- *
- * Devuelve `true` si la reserva se canceló y `false` si se echó atrás: el
- * modal usa ese valor para saber si cerrarse o volver a la edición. Si el
- * servicio falla, deja que el error suba — el modal lo enseña en su sitio,
- * junto al formulario, y no en un aviso que quedaría tapado por él.
- *
- * @param {import('./services/reservasService.js').Reserva} reserva
- * @returns {Promise<boolean>}
- */
-async function pedirCancelacion(reserva) {
-  const confirmado = await confirmar({
-    titulo: 'Cancelar reserva',
-    mensaje:
-      `La reserva de ${reserva.nombre} dejará de aparecer en la tabla de hoy. ` +
-      'El registro y su historial se conservan.',
-    textoConfirmar: 'Sí, cancelar la reserva',
-    peligro: true,
-  });
-  if (!confirmado) return false;
-
-  await cancelarReserva(reserva.id);
-  // La cancelada ya no sale en la tabla, así que destacar su fila no tendría
-  // a qué agarrarse: se limpia para no señalar a la vecina de al lado.
-  estado.ultimaReservaId = null;
-  await refrescarTabla();
-  mostrarAviso('aviso', `Reserva de ${reserva.nombre} cancelada.`);
-  return true;
+  // La fila se sustituye por la que devolvió el servidor —no por lo que el
+  // formulario creía haber enviado—, así que la tabla sigue reflejando el
+  // servidor sin pagar un viaje más. El refresco de detrás trae el resto.
+  aplicarCambioLocal(estado.reservas.map((r) => (r.id === reserva.id ? reserva : r)));
+  refrescarTabla({ enSegundoPlano: true });
 }
 
 /* ── Avisos y fallos ──────────────────────────────────────────────────── */

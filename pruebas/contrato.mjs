@@ -246,6 +246,7 @@ if (!escribir) {
   const nueva = await pedir('reservas.crear', {
     nombre: '  Prueba De Contrato  ', telefono: MOVIL,
     cafeteria_id: c.id, fecha: LUNES, menu_id: carta.opciones[0].id,
+    medio: 'presencial', pago: 'pagado',
   });
   ok(nueva.nombre === 'Prueba De Contrato', 'el servidor recorta el nombre');
   ok(nueva.estado === 'activa', 'nace activa');
@@ -253,30 +254,60 @@ if (!escribir) {
   ok(Array.isArray(nueva.historial) && nueva.historial[0].tipo === 'creacion',
      'nace con su asiento de creación');
   ok(typeof nueva.telefono === 'string', 'devuelve el móvil como cadena');
+  ok(nueva.medio === 'presencial' && nueva.pago === 'pagado',
+     `guarda medio y pago → ${nueva.medio} · ${nueva.pago}`);
+
+  // Lo que se guarda tiene que ser lo que se lee. Parece obvio y no lo es:
+  // si el backend escribe las columnas en un orden distinto al que tiene la
+  // hoja, la respuesta de `crear` sale bien —viene de memoria— y el destrozo
+  // solo aparece al releer. Es exactamente el fallo que dejó reservas
+  // invisibles en producción.
+  const releida = (await pedir('reservas.delDia', { cafeteria_id: c.id, fecha: LUNES }))
+    .find((x) => x.id === nueva.id);
+  ok(!!releida, 'la reserva recién creada aparece al releer el día');
+  if (releida) {
+    ok(releida.estado === 'activa', `estado tras releer → «${releida.estado}»`);
+    ok(releida.medio === 'presencial' && releida.pago === 'pagado',
+       `medio y pago tras releer → ${releida.medio} · ${releida.pago}`);
+    ok(/^\d{4}-\d{2}-\d{2}T/.test(releida.timestamp),
+       `timestamp tras releer → ${String(releida.timestamp).slice(0, 24)}`);
+    ok(Array.isArray(releida.historial) && releida.historial[0]?.tipo === 'creacion',
+       'historial tras releer sigue siendo un arreglo con su asiento de creación');
+    ok(releida.nombre === nueva.nombre && releida.telefono === nueva.telefono,
+       'y el nombre y el móvil no se han corrido de columna');
+  }
+
+  await esperaError('DATOS_INCOMPLETOS', 'sin «pago»', 'reservas.crear',
+    { nombre: 'Otra', telefono: '3009990004', cafeteria_id: c.id,
+      fecha: LUNES, menu_id: carta.opciones[0].id, medio: 'presencial' });
+  await esperaError('DATOS_INCOMPLETOS', 'un «medio» inventado', 'reservas.crear',
+    { nombre: 'Otra', telefono: '3009990005', cafeteria_id: c.id,
+      fecha: LUNES, menu_id: carta.opciones[0].id, medio: 'humo', pago: 'debe' });
 
   await esperaError('RESERVA_DUPLICADA', 'mismo móvil, misma sede, mismo día', 'reservas.crear',
     { nombre: 'Otra', telefono: MOVIL, cafeteria_id: c.id,
-      fecha: LUNES, menu_id: carta.opciones[0].id });
+      fecha: LUNES, menu_id: carta.opciones[0].id, medio: 'presencial', pago: 'pagado' });
   await esperaError('MENU_INVALIDO', 'plato fuera de la carta', 'reservas.crear',
     { nombre: 'Otra', telefono: '3009990001', cafeteria_id: c.id,
-      fecha: LUNES, menu_id: 'plato-que-no-existe' });
+      fecha: LUNES, menu_id: 'plato-que-no-existe', medio: 'presencial', pago: 'pagado' });
   if (!sinReglaFinDeSemana) {
     await esperaError('SIN_SERVICIO', 'reservar en sábado', 'reservas.crear',
       { nombre: 'Otra', telefono: '3009990002', cafeteria_id: c.id,
-        fecha: SABADO, menu_id: carta.opciones[0].id });
+        fecha: SABADO, menu_id: carta.opciones[0].id, medio: 'presencial', pago: 'pagado' });
   }
   await esperaError('DATOS_INCOMPLETOS', 'sin móvil', 'reservas.crear',
     { nombre: 'Otra', telefono: '', cafeteria_id: c.id,
-      fecha: LUNES, menu_id: carta.opciones[0].id });
+      fecha: LUNES, menu_id: carta.opciones[0].id, medio: 'presencial', pago: 'pagado' });
   await esperaError('CAFETERIA_NO_ENCONTRADA', 'cafetería inexistente', 'reservas.crear',
     { nombre: 'Otra', telefono: '3009990003', cafeteria_id: 'no-existe-jamas',
-      fecha: LUNES, menu_id: carta.opciones[0].id });
+      fecha: LUNES, menu_id: carta.opciones[0].id, medio: 'presencial', pago: 'pagado' });
 
   titulo('Escritura · historial');
 
   const editada = await pedir('reservas.actualizar', {
     id: nueva.id, nombre: 'Prueba De Contrato Editada',
     telefono: MOVIL, menu_id: carta.opciones[1].id,
+    medio: 'presencial', pago: 'pagado',
   });
   ok(editada.historial.length === 2, `el historial crece a ${editada.historial.length}`);
   const asiento = editada.historial[1];
@@ -291,10 +322,10 @@ if (!escribir) {
 
   await esperaError('SIN_CAMBIOS', 'guardar sin tocar nada', 'reservas.actualizar',
     { id: nueva.id, nombre: editada.nombre, telefono: editada.telefono,
-      menu_id: editada.menu_id });
+      menu_id: editada.menu_id, medio: editada.medio, pago: editada.pago });
   await esperaError('RESERVA_NO_ENCONTRADA', 'editar una inexistente', 'reservas.actualizar',
     { id: 'r-no-existe-jamas', nombre: 'X Y', telefono: '3001112233',
-      menu_id: carta.opciones[0].id });
+      menu_id: carta.opciones[0].id, medio: 'presencial', pago: 'pagado' });
 
   titulo('Escritura · cancelación');
 
@@ -309,11 +340,13 @@ if (!escribir) {
   await esperaError('RESERVA_CANCELADA', 'cancelar dos veces',
                     'reservas.cancelar', { id: nueva.id });
   await esperaError('RESERVA_CANCELADA', 'editar una cancelada', 'reservas.actualizar',
-    { id: nueva.id, nombre: 'Otro', telefono: MOVIL, menu_id: carta.opciones[0].id });
+    { id: nueva.id, nombre: 'Otro', telefono: MOVIL, menu_id: carta.opciones[0].id,
+      medio: 'presencial', pago: 'pagado' });
 
   const reusa = await pedir('reservas.crear', {
     nombre: 'Prueba De Contrato', telefono: MOVIL,
     cafeteria_id: c.id, fecha: LUNES, menu_id: carta.opciones[0].id,
+    medio: 'presencial', pago: 'pagado',
   });
   ok(reusa.id !== nueva.id, 'una cancelada NO bloquea: el móvil puede reservar otra vez');
   await pedir('reservas.cancelar', { id: reusa.id });

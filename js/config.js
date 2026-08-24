@@ -10,7 +10,7 @@
 export const FUENTE_DATOS = 'api';
 
 /** URL del despliegue de Google Apps Script (o del futuro backend propio). */
-export const API_BASE_URL = 'https://script.google.com/macros/s/AKfycbzyGki7mT5H0cZCvrl6N9AwzO0OCFMNzhMic9Zdd-MuZlx7MqnAgD6pi2ED8r8d-Yzw/exec';
+export const API_BASE_URL = 'https://script.google.com/macros/s/AKfycbziYt6hJ3zhRBA1no5YpRoSDHdOwSjCLDMCBcceRDqFm7Z6G14fZ2kvQEJWYDDWadOY/exec';
 
 /** Latencia simulada del mock, en ms. Sirve para ejercitar los estados de carga. */
 export const LATENCIA_MOCK_MS = 300;

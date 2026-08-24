@@ -321,7 +321,7 @@ que es la frontera entre la forma de la API y la forma de la UI.
 |---|---|
 | `Cafeterias`   | `id` · `codigo` · `nombre` · `ubicacion` · `imagen` · `activa` |
 | `MenuSemanal`  | `id` · `fecha` · `opciones[{id, nombre}]` |
-| `Reservas`     | `id` · `nombre` · `telefono` · `cafeteria_id` · `fecha` · `menu_id` · `menu_nombre` · `estado` · `timestamp` · `historial[]` |
+| `Reservas`     | `id` · `nombre` · `telefono` · `cafeteria_id` · `fecha` · `menu_id` · `menu_nombre` · `medio` · `pago` · `estado` · `timestamp` · `historial[]` |
 
 Las fechas viajan como `'YYYY-MM-DD'` en hora local. `utils/fechas.js` no usa
 `toISOString()`: convierte a UTC y en Colombia (UTC−5) devolvería el día
@@ -544,11 +544,25 @@ empieza vacía.
 
 ### Detalles que ya están resueltos en el script
 
-- **Bloqueo para toda la petición**, no solo para las escrituras. Dos reservas
-  simultáneas del mismo móvil podrían pasar las dos la comprobación de
-  duplicado si cada una lee antes de que la otra escriba. `TIMEOUT_HTTP_MS`
-  está por encima de esa espera a propósito: si el cliente se rindiera antes,
-  el trabajo seguiría en Google y quien atiende volvería a pulsar el botón.
+- **Bloqueo solo en las escrituras.** Dos reservas simultáneas del mismo móvil
+  podrían pasar las dos la comprobación de duplicado si cada una lee antes de
+  que la otra escriba, así que toda acción que escriba toma el bloqueo de
+  script. Las consultas no: dos lecturas no pueden pisarse, y tomarlo también
+  para ellas ponía en cola a las cuatro cafeterías unas detrás de otras.
+  Qué acción escribe está declarado en `ACCIONES_QUE_ESCRIBEN`; **una acción
+  nueva que escriba y no se apunte ahí se queda sin bloqueo**.
+  `TIMEOUT_HTTP_MS` está por encima de esa espera a propósito: si el cliente
+  se rindiera antes, el trabajo seguiría en Google y quien atiende volvería a
+  pulsar el botón.
+- **Dos cachés, para no releer lo mismo.** Una dura una petición y evita que
+  una acción lea dos veces la misma pestaña. La otra dura `VIDA_CACHE_S` (dos
+  minutos) y se comparte entre peticiones, pero solo para `Cafeterias` y
+  `MenuSemanal` —nunca `Reservas`, que cambia con cada registro— y nunca para
+  la tabla que la acción va a escribir: los objetos llevan `_fila`, y escribir
+  con un `_fila` caducado es escribir en la fila de al lado. Toda escritura
+  invalida su tabla, así que un cambio hecho desde la aplicación se ve al
+  instante. **Un cambio hecho a mano en la hoja puede tardar hasta dos minutos
+  en verse**, porque editar una celda no puede avisar a nadie.
 - **Fechas y móviles como texto.** Si la hoja los interpreta, `'2026-08-24'`
   vuelve como objeto `Date` —y `toISOString()` en Colombia resta un día toda
   la tarde— y el móvil pierde cualquier cero inicial. Además se normalizan al
@@ -636,6 +650,14 @@ cambiar valores ahí, no reescribir reglas.
   `Math.random()`, los totales cambiarían en cada recarga y sería imposible
   saber si un número que cambió es un dato o un artefacto. Al migrar al backend
   real, esa carpeta se borra entera y los datos son los de verdad.
+- **El segundo de Apps Script no se puede quitar.** Medido contra el
+  despliegue real, una petición que no lee ni una celda tarda unos 1000 ms:
+  es el peaje de la plataforma —la redirección a `googleusercontent`, el
+  arranque del script— y no depende de lo que haga el código. Por eso la
+  optimización va toda por el mismo sitio: **hacer menos viajes y no
+  encadenarlos**. Registrar una reserva pasó de dos viajes en fila a uno, y
+  abrir el formulario de uno a ninguno; por debajo de ahí no se baja sin
+  cambiar de backend, y ese es el argumento de la migración.
 - **La tabla de detalle se corta en 500 filas.** El total real siempre se
   muestra y la exportación las lleva todas, pero no hay paginación para
   recorrerlas en pantalla.

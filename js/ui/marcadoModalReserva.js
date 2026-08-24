@@ -14,6 +14,45 @@
 
 import { crear } from './dom.js';
 
+/**
+ * Un grupo de opciones excluyentes, con radios en vez de un desplegable.
+ *
+ * Con dos opciones, un radio es un clic y un desplegable son dos —abrir y
+ * elegir—, y además las dos alternativas están a la vista sin desplegar nada.
+ * En un mostrador donde se rellena esto decenas de veces al día, esa
+ * diferencia se nota.
+ *
+ * Va en un <fieldset> con <legend> y no en un <div> con <label>: es lo que
+ * hace que un lector de pantalla anuncie «Pago, grupo» antes de leer las
+ * opciones, en lugar de soltar dos radios sueltos sin contexto.
+ */
+function grupoOpciones(nombre, etiqueta, opciones, claveError) {
+  return crear('fieldset', {
+    clase: 'campo campo--opciones',
+    hijos: [
+      crear('legend', { clase: 'campo__etiqueta', texto: etiqueta }),
+      crear('div', {
+        clase: 'opciones',
+        hijos: opciones.map(({ valor, texto }) => {
+          const id = `campo-${nombre}-${valor}`;
+          return crear('label', {
+            clase: 'opcion',
+            attrs: { for: id },
+            hijos: [
+              crear('input', {
+                clase: 'opcion__radio',
+                attrs: { type: 'radio', id, name: nombre, value: valor },
+              }),
+              crear('span', { clase: 'opcion__texto', texto }),
+            ],
+          });
+        }),
+      }),
+      crear('p', { clase: 'campo__error', attrs: { 'data-error': claveError } }),
+    ],
+  });
+}
+
 /** Un campo: etiqueta, control y hueco para su mensaje de error. */
 function campo(idControl, etiqueta, control, claveError) {
   return crear('div', {
@@ -108,6 +147,17 @@ export function montarModalReserva(anfitrion = document.body) {
       campo('campo-nombre', 'Nombre de quien reserva', nombre, 'nombre'),
       campo('campo-telefono', 'Móvil de contacto', telefono, 'telefono'),
       campo('campo-menu', 'Menú del día', menu, 'menu'),
+      // Ninguno viene preseleccionado a propósito: en «Pago» un valor por
+      // defecto acabaría marcando como pagado lo que no lo está, y eso es
+      // dinero. Se obliga a elegir.
+      grupoOpciones('medio', 'Medio de reserva', [
+        { valor: 'presencial', texto: 'Presencial' },
+        { valor: 'telefono', texto: 'Teléfono' },
+      ], 'medio'),
+      grupoOpciones('pago', 'Pago', [
+        { valor: 'pagado', texto: 'Pagado' },
+        { valor: 'debe', texto: 'Debe' },
+      ], 'pago'),
       // Solo visible al editar: una reserva nueva no tiene nada que contar.
       crear('section', {
         clase: 'historial',

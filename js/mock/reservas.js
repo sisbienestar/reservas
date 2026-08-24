@@ -3,7 +3,7 @@
  *
  * Hoja equivalente 'Reservas':
  *   id | nombre | telefono | cafeteria_id | fecha | menu_id | menu_nombre |
- *   estado | timestamp | historial
+ *   medio | pago | estado | timestamp | historial
  *
  * `historial` es una columna JSON, igual que `opciones` en 'MenuSemanal':
  * una hoja de cálculo no tiene arreglos, así que se guarda serializada.
@@ -157,6 +157,11 @@ function construirReservas() {
           fecha,
           menu_id: plato.id,
           menu_nombre: plato.nombre,
+          // La mayoría se hace en el mostrador y ya pagada; el resto da
+          // variedad suficiente para que los filtros y reportes tengan algo
+          // que enseñar.
+          medio: azar() < 0.75 ? 'presencial' : 'telefono',
+          pago: azar() < 0.85 ? 'pagado' : 'debe',
           estado: cancelada ? 'cancelada' : 'activa',
           timestamp: creada,
           historial,

@@ -9,6 +9,7 @@
  */
 
 import { crear, pintar, bloqueEstado } from './dom.js';
+import { botonConCarga } from './boton.js';
 import { formatearTelefono } from '../utils/telefono.js';
 import { formatearFechaCorta, nombreDiaCorto } from '../utils/fechas.js';
 
@@ -27,14 +28,9 @@ export function mostrarError(contenedor, mensaje, alReintentar) {
   }));
 }
 
+/** Con girador: abrir el modal consulta la carta de esa fecha. */
 function boton(texto, etiqueta, alPulsar) {
-  const b = crear('button', {
-    clase: 'boton boton--secundario boton--sm',
-    texto,
-    attrs: { type: 'button', 'aria-label': etiqueta },
-  });
-  b.addEventListener('click', alPulsar);
-  return b;
+  return botonConCarga({ texto, etiqueta, alPulsar });
 }
 
 /** Etiqueta de estado. Lleva texto, no solo color: el color no es un dato. */

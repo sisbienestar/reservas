@@ -1,7 +1,7 @@
 /**
  * Tabla de reservas del día.
  *
- * Columnas: Nombre · Menú del día · Móvil · acción de editar.
+ * Columnas: N.º · Nombre · Menú del día · Móvil · Medio · Pago · editar.
  *
  * La función expone los tres estados por separado (cargando, error, datos)
  * porque la vista los necesita en momentos distintos y no queremos que
@@ -9,7 +9,28 @@
  */
 
 import { crear, pintar, bloqueEstado } from './dom.js';
+import { botonConCarga } from './boton.js';
 import { formatearTelefono } from '../utils/telefono.js';
+
+/** Etiqueta visible de los campos de opción. */
+const ETIQUETAS = {
+  presencial: 'Presencial',
+  telefono: 'Teléfono',
+  pagado: 'Pagado',
+  debe: 'Debe',
+};
+
+/**
+ * Marca de pago. Con texto además del color: quien atiende necesita ver de
+ * un vistazo quién debe, y no puede depender de distinguir verde de ámbar.
+ */
+function marcaPago(pago) {
+  if (!pago) return crear('span', { clase: 'tabla__vacio', texto: '—' });
+  return crear('span', {
+    clase: `marca-pago marca-pago--${pago}`,
+    texto: ETIQUETAS[pago],
+  });
+}
 
 export function mostrarCargando(contenedor) {
   pintar(contenedor, bloqueEstado({
@@ -42,15 +63,12 @@ export function mostrarError(contenedor, mensaje, alReintentar) {
  * Con solo «Editar» repetido diez veces, un lector de pantalla que recorra los
  * botones fuera de contexto no distingue una fila de otra: de ahí el
  * aria-label con el nombre.
+ *
+ * Va por `botonConCarga` porque abrir el modal pide la carta al servidor y
+ * eso tarda: sin girador, la fila parece no responder.
  */
 function botonFila(texto, etiqueta, alPulsar) {
-  const boton = crear('button', {
-    clase: 'boton boton--secundario boton--sm',
-    texto,
-    attrs: { type: 'button', 'aria-label': etiqueta },
-  });
-  boton.addEventListener('click', alPulsar);
-  return boton;
+  return botonConCarga({ texto, etiqueta, alPulsar });
 }
 
 /**
@@ -81,6 +99,8 @@ export function mostrarReservas(contenedor, reservas, { idDestacado, alEditar } 
           crear('th', { texto: 'Nombre', attrs: { scope: 'col' } }),
           crear('th', { texto: 'Menú del día', attrs: { scope: 'col' } }),
           crear('th', { texto: 'Móvil', attrs: { scope: 'col' } }),
+          crear('th', { texto: 'Medio', attrs: { scope: 'col' } }),
+          crear('th', { texto: 'Pago', attrs: { scope: 'col' } }),
           // La columna de acciones no lleva rótulo visible, pero sí uno para
           // lectores de pantalla: una cabecera vacía deja la columna sin nombre.
           crear('th', {
@@ -107,6 +127,11 @@ export function mostrarReservas(contenedor, reservas, { idDestacado, alEditar } 
             clase: 'tabla__telefono',
             texto: formatearTelefono(reserva.telefono),
           }),
+          crear('td', {
+            clase: 'tabla__menu',
+            texto: ETIQUETAS[reserva.medio] ?? '—',
+          }),
+          crear('td', { hijos: [marcaPago(reserva.pago)] }),
           crear('td', {
             clase: 'tabla__acciones',
             hijos: [

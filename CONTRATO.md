@@ -87,6 +87,8 @@ La carta se indexa **solo por fecha**: las cuatro sedes sirven lo mismo.
   "fecha": "2026-08-19",
   "menu_id": "ajiaco-santafereno",
   "menu_nombre": "Ajiaco santafereño",   // copia, no referencia — ver §4
+  "medio": "presencial",          // "presencial" | "telefono"
+  "pago": "pagado",               // "pagado" | "debe"
   "estado": "activa",             // "activa" | "cancelada"
   "timestamp": "2026-08-19T12:06:00.000Z",
   "historial": [
@@ -98,7 +100,7 @@ La carta se indexa **solo por fecha**: las cuatro sedes sirven lo mismo.
 }
 ```
 
-`campo` es `"nombre"`, `"telefono"` o `"menu"`. `tipo` es `"creacion"`,
+`campo` es `"nombre"`, `"telefono"`, `"menu"`, `"medio"` o `"pago"`. `tipo` es `"creacion"`,
 `"modificacion"` o `"cancelacion"`.
 
 ### El identificador de una reserva
@@ -126,6 +128,20 @@ Tres reglas:
 
 Un identificador que no siga el formato —los de antes de este cambio— no debe
 romper nada: la interfaz lo detecta y muestra el número vacío en vez de fallar.
+
+### Medio de reserva y estado de pago
+
+`medio` y `pago` son **obligatorios** y solo admiten los valores de arriba.
+El servidor los valida además del formulario, y no por desconfianza del
+navegador: «pagado» o «debe» es dinero, y un valor inventado por una petición
+hecha a mano dejaría la contabilidad con un estado que ninguna pantalla sabe
+pintar.
+
+Ninguno tiene valor por defecto. En `pago`, uno preseleccionado acabaría
+marcando como pagado lo que no lo está.
+
+Una reserva anterior a estos campos llega sin ellos; la interfaz lo muestra
+como «—» y obliga a elegir si se edita.
 
 ### Tipos que el frontend da por sentados
 
@@ -167,8 +183,8 @@ no es cosmético:
 | Acción | Params | Devuelve |
 |---|---|---|
 | `reservas.delDia` | `cafeteria_id`, `fecha` | `Reserva[]` **solo activas**, por orden de llegada |
-| `reservas.crear` | `nombre`, `telefono`, `cafeteria_id`, `fecha`, `menu_id` | `Reserva` |
-| `reservas.actualizar` | `id`, `nombre`, `telefono`, `menu_id` | `Reserva` |
+| `reservas.crear` | `nombre`, `telefono`, `cafeteria_id`, `fecha`, `menu_id`, `medio`, `pago` | `Reserva` |
+| `reservas.actualizar` | `id`, `nombre`, `telefono`, `menu_id`, `medio`, `pago` | `Reserva` |
 | `reservas.cancelar` | `id` | `Reserva` con `estado:"cancelada"` |
 | `reservas.buscar` | `desde`, `hasta`, `cafeteria_id?`, `estado?`, `texto?`, `limite?` | `{total, reservas[], resumen}` |
 
@@ -224,6 +240,7 @@ datos que el resto del sistema da por imposibles.
 | El nombre de una cafetería nueva ya existe | `CAFETERIA_DUPLICADA` |
 | `desde` posterior a `hasta`, o día fuera de la semana | `RANGO_INVALIDO` |
 | Faltan campos obligatorios | `DATOS_INCOMPLETOS` |
+| `medio` o `pago` ausentes, o con un valor fuera de la lista | `DATOS_INCOMPLETOS` |
 | No existe la cafetería / la reserva | `CAFETERIA_NO_ENCONTRADA`, `RESERVA_NO_ENCONTRADA` |
 | Acción no reconocida | `ACCION_DESCONOCIDA` |
 
