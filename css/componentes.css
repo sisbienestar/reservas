@@ -746,3 +746,83 @@ td.tabla__numero-reserva { padding-right: var(--e-3); }
 }
 
 .tabla__vacio { color: var(--c-texto-3); }
+
+/* ── Consolidado del día (mostrador) ─────────────────────────────────── */
+
+.resumen {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--e-5);
+  margin-bottom: var(--e-5);
+}
+
+/* Los platos ocupan lo que necesiten y el cobro va detrás; cuando no caben
+   los dos a lo ancho, el cobro pasa debajo entero en vez de partirse. */
+.resumen__grupo { flex: 1 1 auto; min-width: 0; }
+.resumen__grupo:last-child { flex: 0 0 auto; }
+
+.resumen__titulo {
+  margin: 0 0 var(--e-2);
+  font-family: var(--fuente-texto);
+  font-size: var(--texto-xs);
+  font-weight: var(--peso-medio);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--c-texto-3);
+}
+
+.resumen__cifras {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--e-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Tarjetas pequeñas a propósito: son un vistazo de reojo mientras se atiende,
+   no el contenido principal de la pantalla. Esa sigue siendo la tabla. */
+.cifra {
+  min-width: 88px;
+  padding: var(--e-2) var(--e-3);
+  background: var(--c-superficie);
+  border: 1px solid var(--c-borde);
+  border-radius: var(--radio-md);
+  box-shadow: var(--sombra-sm);
+}
+
+.cifra__rotulo {
+  margin: 0;
+  font-size: var(--texto-xs);
+  line-height: 1.3;
+  color: var(--c-texto-2);
+}
+
+/* Tabulares aquí sí: las tarjetas se leen en fila y con anchos de dígito
+   distintos las cifras bailan de una a otra. */
+.cifra__valor {
+  margin: var(--e-1) 0 0;
+  font-family: var(--fuente-titulo);
+  font-size: var(--texto-lg);
+  font-weight: var(--peso-fuerte);
+  line-height: 1.1;
+  letter-spacing: var(--espaciado-titulo);
+  font-variant-numeric: tabular-nums;
+}
+
+/* El color solo marca estado, nunca distingue un plato de otro: pintar cada
+   plato de un color obligaría a mirar la leyenda para leer un número. */
+.cifra--debe {
+  background: var(--c-aviso-suave);
+  border-color: var(--c-aviso-suave);
+}
+.cifra--debe .cifra__rotulo,
+.cifra--debe .cifra__valor { color: var(--c-aviso); }
+
+.cifra--sin-dato .cifra__rotulo,
+.cifra--sin-dato .cifra__valor { color: var(--c-texto-3); }
+
+@media (max-width: 40rem) {
+  .resumen { gap: var(--e-4); }
+  .resumen__grupo, .resumen__grupo:last-child { flex: 1 1 100%; }
+}
