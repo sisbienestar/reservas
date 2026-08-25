@@ -116,10 +116,10 @@
 
 .tabla--admin { min-width: 860px; }
 
-/* La tabla del administrador empieza por el identificador entero, que ocupa
-   lo que ocupa; el reparto de anchos de la tabla del día no aplica aquí. */
-.tabla--admin th:nth-child(2),
-.tabla--admin td:nth-child(2) { width: auto; }
+/* Esta tabla no fija anchos: empieza por el identificador entero, que ocupa
+   lo que ocupa, y sus columnas son de largo muy distinto —el navegador las
+   reparte mejor que un porcentaje escrito a mano—. Los anchos del mostrador
+   viven en `.tabla--mostrador` y no llegan hasta aquí. */
 
 .tabla--totales { min-width: 320px; margin-top: var(--e-4); }
 

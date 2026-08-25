@@ -266,14 +266,26 @@
   color: var(--c-texto);
 }
 
-/* El nombre se lleva el ancho sobrante; número, móvil y botón ocupan lo justo.
-   Sin esto las columnas se reparten a partes iguales y el nombre —el dato que
-   más varía de largo— es el que se parte en dos líneas.
+/* Reparto de anchos en la tabla del mostrador: N.º · Nombre · Menú del día ·
+   Móvil · Medio · Pago · acciones.
 
-   Va en la SEGUNDA columna, no en la primera: desde que la tabla del día
-   empieza por el n.º de reserva, la primera es la más estrecha de todas. */
-.tabla th:nth-child(2),
-.tabla td:nth-child(2) { width: 32%; }
+   Se fijan las dos columnas de texto libre, que son las únicas que pueden
+   partirse en varias líneas; las demás llevan datos de largo conocido y se
+   apañan solas. Sin esto, el reparto por defecto le daba al nombre mucho más
+   de lo que necesita y dejaba «Menú del día» tan estrecho que hasta el propio
+   encabezado se rompía en tres líneas.
+
+   El menú se lleva más que el nombre a propósito: un plato es «Cerdo con
+   verduras salteadas» y un nombre casi siempre cabe en una línea. Y es el
+   dato que se lee de un vistazo al servir.
+
+   Va por posición y no por clase porque la columna de «Medio» reutiliza
+   `.tabla__menu` para su color, así que la clase no identifica la columna. */
+.tabla--mostrador th:nth-child(2),
+.tabla--mostrador td:nth-child(2) { width: 22%; }   /* Nombre */
+
+.tabla--mostrador th:nth-child(3),
+.tabla--mostrador td:nth-child(3) { width: 28%; }   /* Menú del día */
 
 .tabla__menu { color: var(--c-texto-2); }
 
@@ -375,6 +387,25 @@
   border-color: color-mix(in srgb, var(--c-error) 25%, transparent);
   color: var(--c-error);
 }
+
+/* Acción dentro del aviso: hereda el color del aviso que la contiene, así que
+   sirve igual en el verde del éxito que en el ámbar de una advertencia sin
+   necesitar una variante por cada uno. Subrayada porque es lo que la
+   distingue del texto en un bloque que ya es todo del mismo color. */
+.aviso__accion {
+  margin-left: var(--e-3);
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: var(--peso-fuerte);
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.aviso__accion:hover { text-decoration-thickness: 2px; }
 
 /* ── Modal ───────────────────────────────────────────────────────────── */
 
@@ -825,4 +856,55 @@ td.tabla__numero-reserva { padding-right: var(--e-3); }
 @media (max-width: 40rem) {
   .resumen { gap: var(--e-4); }
   .resumen__grupo, .resumen__grupo:last-child { flex: 1 1 100%; }
+}
+
+/* ── Ticket de confirmación ──────────────────────────────────────────── */
+
+.modal--ticket .modal__panel { max-width: 27rem; }
+
+/* El ticket imita un recibo de caja, así que tiene su propia paleta en vez de
+   los tokens de la interfaz: es un objeto de papel dentro de la pantalla, no
+   un bloque más de la página. Son los dos únicos colores literales del
+   proyecto y están aquí a propósito. */
+.ticket {
+  margin: 0;
+  padding: var(--e-4) var(--e-3);
+  background: #e9edf1;
+  color: #3a4a5a;
+  border-radius: var(--radio-sm);
+  box-shadow: inset 0 0 0 1px rgba(58, 74, 90, 0.10);
+
+  /* Monoespaciada de verdad: el ticket alinea columnas con espacios, y una
+     fuente proporcional lo descuadra entero. La lista termina en el
+     monospace del sistema para que nunca caiga en una proporcional. */
+  font-family: 'Consolas', 'SF Mono', 'Menlo', 'DejaVu Sans Mono', monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+
+  /* Se respeta tal cual y no se parte: una línea partida rompe el centrado y
+     el recibo deja de leerse como un recibo. Si no cabe, se desplaza. */
+  white-space: pre;
+  overflow-x: auto;
+  text-align: left;
+}
+
+.ticket__aviso {
+  margin: 0;
+  font-size: var(--texto-sm);
+  color: var(--c-exito);
+}
+
+.ticket__aviso--error { color: var(--c-aviso); }
+
+/* Enlace y botón conviven en el pie: el enlace necesita que se le diga que
+   se comporte como un botón, porque no lo es. */
+.modal--ticket .modal__pie a.boton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+@media (max-width: 26rem) {
+  .ticket { font-size: 0.72rem; }
 }

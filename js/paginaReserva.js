@@ -14,11 +14,12 @@ import {
   actualizarReserva,
 } from './services/reservasService.js';
 
-import { qs, pintar, bloqueEstado, prepararLogo } from './ui/dom.js';
+import { qs, crear, pintar, bloqueEstado, prepararLogo } from './ui/dom.js';
 import { crearModalReserva } from './ui/modalReserva.js';
 import { montarModalReserva } from './ui/marcadoModalReserva.js';
 import * as tabla from './ui/tablaReservas.js';
 import { mostrarResumen } from './ui/resumenDelDia.js';
+import { montarModalTicket } from './ui/modalTicket.js';
 
 import { PERMITIR_FIN_DE_SEMANA } from './config.js';
 import { paramUrl } from './utils/url.js';
@@ -85,6 +86,8 @@ const modal = crearModalReserva({
   alCrear: confirmarReserva,
   alEditar: guardarCambios,
 });
+
+const ticket = montarModalTicket();
 
 /* ── Arranque ─────────────────────────────────────────────────────────── */
 
@@ -176,6 +179,10 @@ function pintarTabla() {
   tabla.mostrarReservas(vista.tabla, estado.reservas, {
     idDestacado: estado.ultimaReservaId,
     alEditar: (reserva) => abrirFormulario(reserva),
+    // Desde la fila: es donde está cada reserva y donde se la busca cuando
+    // alguien vuelve a pedir su comprobante. El aviso de «reserva
+    // registrada» solo lo ofrece la primera vez.
+    alVerTicket: (reserva) => ticket.abrir(reserva, estado.cafeteria),
   });
 }
 
@@ -270,7 +277,13 @@ async function confirmarReserva(datos) {
   // dejaría el modal abierto y el mostrador esperando otro viaje completo.
   // La relectura va por detrás, para recoger lo que hayan hecho otros.
   aplicarCambioLocal([...estado.reservas, reserva]);
-  mostrarAviso('exito', `Reserva registrada · ${reserva.nombre} · ${reserva.menuNombre}.`);
+  // El ticket se ofrece, no se impone: un diálogo que apareciera solo tras
+  // cada reserva habría que cerrarlo veinte veces por servicio, y eso deshace
+  // el trabajo que se hizo para que registrar fuese inmediato.
+  mostrarAviso('exito', `Reserva registrada · ${reserva.nombre} · ${reserva.menuNombre}.`, {
+    texto: 'Ver ticket',
+    alPulsar: () => ticket.abrir(reserva, estado.cafeteria),
+  });
   refrescarTabla({ enSegundoPlano: true });
 }
 
@@ -301,9 +314,24 @@ async function guardarCambios(id, datos) {
 
 /* ── Avisos y fallos ──────────────────────────────────────────────────── */
 
-function mostrarAviso(tipo, mensaje) {
+/**
+ * @param {string} tipo
+ * @param {string} mensaje
+ * @param {{texto: string, alPulsar: () => void}} [accion] botón dentro del
+ *        aviso, para lo que se ofrece pero no se impone.
+ */
+function mostrarAviso(tipo, mensaje, accion) {
   vista.aviso.className = `aviso aviso--${tipo}`;
   vista.aviso.textContent = mensaje;
+
+  if (accion) {
+    vista.aviso.appendChild(crear('button', {
+      clase: 'aviso__accion',
+      texto: accion.texto,
+      attrs: { type: 'button' },
+    })).addEventListener('click', accion.alPulsar);
+  }
+
   vista.aviso.hidden = false;
 }
 

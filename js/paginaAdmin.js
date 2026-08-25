@@ -30,6 +30,7 @@ import { qs, qsa, pintar, crear, prepararLogo } from './ui/dom.js';
 import { crearModalReserva } from './ui/modalReserva.js';
 import { montarModalReserva } from './ui/marcadoModalReserva.js';
 import { montarConfirmacion } from './ui/modalConfirmacion.js';
+import { montarModalTicket } from './ui/modalTicket.js';
 import { pedirAcceso, cerrarSesion } from './ui/accesoAdmin.js';
 import { conCarga } from './ui/boton.js';
 import * as tablaAdmin from './ui/adminReservas.js';
@@ -102,6 +103,7 @@ const modal = crearModalReserva({
 });
 
 const { confirmar } = montarConfirmacion();
+const ticket = montarModalTicket();
 
 /** Etiqueta visible de los campos de opción, para el CSV. */
 const ETIQUETAS = {
@@ -251,6 +253,12 @@ function pintarResultado() {
     total: estado.resultado.total,
     nombreCafeteria,
     alEditar: abrirEdicion,
+    // Aquí es donde más falta hace: administración ve reservas de cualquier
+    // día, así que es el único sitio desde el que se puede volver a mandar el
+    // ticket de una que ya no está en la pantalla del mostrador.
+    alVerTicket: (reserva) => ticket.abrir(reserva, {
+      nombre: nombreCafeteria(reserva.cafeteriaId),
+    }),
   });
 
   if (estado.vistaActiva === 'consolidado') {

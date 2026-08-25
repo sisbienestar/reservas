@@ -74,14 +74,16 @@ function botonFila(texto, etiqueta, alPulsar) {
 /**
  * @param {HTMLElement} contenedor
  * @param {import('../services/reservasService.js').Reserva[]} reservas
- * @param {{idDestacado?: string, alEditar?: (reserva: any) => void}} opciones
+ * @param {{idDestacado?: string, alEditar?: (reserva: any) => void,
+ *          alVerTicket?: (reserva: any) => void}} opciones
  *        idDestacado: la reserva recién creada o modificada, para señalarla.
  *
- * La fila solo ofrece «Editar». Cancelar vive dentro de ese modal: es una
- * acción destructiva y no debe estar a un clic de distancia en una lista de
- * veinte filas, donde se pulsa la de al lado sin querer.
+ * La fila ofrece «Editar» y «Ticket», las dos cosas que se hacen sobre una
+ * reserva concreta y ninguna destructiva. Cancelar NO está aquí: vive dentro
+ * del modal, porque a un clic de distancia en una lista de veinte filas se
+ * pulsa la de al lado sin querer.
  */
-export function mostrarReservas(contenedor, reservas, { idDestacado, alEditar } = {}) {
+export function mostrarReservas(contenedor, reservas, { idDestacado, alEditar, alVerTicket } = {}) {
   if (reservas.length === 0) {
     pintar(contenedor, bloqueEstado({
       tipo: 'vacio',
@@ -140,6 +142,11 @@ export function mostrarReservas(contenedor, reservas, { idDestacado, alEditar } 
                     alEditar(reserva),
                   )
                 : null,
+              alVerTicket
+                ? botonFila('Ticket', `Ver el ticket de ${reserva.nombre}`, () =>
+                    alVerTicket(reserva),
+                  )
+                : null,
             ],
           }),
         ],
@@ -149,7 +156,7 @@ export function mostrarReservas(contenedor, reservas, { idDestacado, alEditar } 
 
   const total = reservas.length;
   const tabla = crear('table', {
-    clase: 'tabla',
+    clase: 'tabla tabla--mostrador',
     hijos: [
       crear('caption', {
         clase: 'tabla__caption',

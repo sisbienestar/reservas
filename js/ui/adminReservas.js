@@ -45,13 +45,14 @@ function marcaEstado(estado) {
  * @param {HTMLElement} contenedor
  * @param {import('../services/reservasService.js').Reserva[]} reservas
  * @param {{total: number, nombreCafeteria: (id: string) => string,
- *          alEditar: Function}} opciones
+ *          alEditar: Function, alVerTicket?: Function}} opciones
  *
- * Igual que en la pantalla de mostrador, la fila solo ofrece «Editar»:
- * cancelar vive dentro de ese modal.
+ * Igual que en la pantalla de mostrador, la fila ofrece «Editar» y «Ticket».
+ * Cancelar NO: vive dentro del modal, porque es destructiva y a un clic de
+ * distancia en una lista larga se pulsa la fila de al lado sin querer.
  */
 export function mostrarReservas(contenedor, reservas, opciones) {
-  const { total, nombreCafeteria, alEditar } = opciones;
+  const { total, nombreCafeteria, alEditar, alVerTicket } = opciones;
 
   if (reservas.length === 0) {
     pintar(contenedor, bloqueEstado({
@@ -101,6 +102,12 @@ export function mostrarReservas(contenedor, reservas, opciones) {
               // sería prometer algo que la API rechaza.
               r.estado === 'activa'
                 ? boton('Editar', `Editar la reserva de ${r.nombre}`, () => alEditar(r))
+                : null,
+              // Tampoco tiene ticket: el comprobante dice «presenta esto al
+              // reclamar tu almuerzo», y ese almuerzo ya no existe. Mandarlo
+              // sería citar a alguien a recoger algo que no le van a dar.
+              r.estado === 'activa' && alVerTicket
+                ? boton('Ticket', `Ver el ticket de ${r.nombre}`, () => alVerTicket(r))
                 : null,
             ],
           }),
